@@ -1,8 +1,13 @@
 export function Metel() {
   return (
-    <div>
-      <h1>Metel Component</h1>
-      <p>Composant de base pour la librairie Metel.</p>
-    </div>
+    <>
+      <color attach="background" args={['#ff0000']} />
+      <ambientLight intensity={0.5} />
+      <pointLight position={[10, 10, 10]} />
+      <mesh>
+        <boxGeometry />
+        <meshStandardMaterial color="white" />
+      </mesh>
+    </>
   );
 }
