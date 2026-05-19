@@ -1,0 +1,97 @@
+.lobby {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: var(--bg, #0f0f0f);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 2.5rem 2rem;
+  background: var(--surface, #1a1a1a);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 1rem;
+  max-width: 360px;
+  width: 100%;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.75rem;
+  color: var(--title, #fff);
+  font-family: var(--font-display, sans-serif);
+}
+
+.subtitle {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted, #888);
+}
+
+.qrWrapper {
+  padding: 1rem;
+  background: #fff;
+  border-radius: 0.5rem;
+  line-height: 0;
+}
+
+.qrPlaceholder {
+  width: 200px;
+  height: 200px;
+  background: #e5e5e5;
+  border-radius: 0.25rem;
+}
+
+.url {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--text-muted, #888);
+  word-break: break-all;
+  text-align: center;
+  max-width: 280px;
+}
+
+.controllers {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.count {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--accent, #D4AC0D);
+  font-family: var(--font-display, sans-serif);
+}
+
+.countLabel {
+  font-size: 0.875rem;
+  color: var(--text-muted, #888);
+}
+
+.startBtn {
+  padding: 0.75rem 2rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: var(--accent, #D4AC0D);
+  color: #0f0f0f;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  width: 100%;
+}
+
+.startBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.startBtn:not(:disabled):hover {
+  opacity: 0.85;
+}

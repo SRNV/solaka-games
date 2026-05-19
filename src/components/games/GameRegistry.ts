@@ -1,10 +1,17 @@
 import { lazy, LazyExoticComponent, ComponentType } from 'react';
+import type { GamepadProps } from '../Gamepad.tsx';
 
-// Type pour nos composants de jeux
 export type GameComponent = LazyExoticComponent<ComponentType<any>>;
+export type ControllerComponent = LazyExoticComponent<ComponentType<GamepadProps>>;
 
-// Le Registry mappe les slugs du serveur aux imports dynamiques
-// Note: Les chemins sont relatifs à l'emplacement de ce fichier dans le submodule
-export const GAME_REGISTRY: Record<string, GameComponent> = {
-  'metel-game': lazy(() => import('../../lib/metel/Metel.tsx')),
+export interface GameEntry {
+  console: GameComponent;
+  controller: ControllerComponent;
+}
+
+export const GAME_REGISTRY: Record<string, GameEntry> = {
+  'metel-game': {
+    console:    lazy(() => import('../../lib/metel/Metel.tsx')),
+    controller: lazy(() => import('../../lib/metel/MetelController.tsx')),
+  },
 };
