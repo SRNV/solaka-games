@@ -94,6 +94,61 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* ── Arrow-navigation theme picker ─────────────────────────── */
+.themeNav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 20px 0 8px;
+}
+
+.navArrow {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1px solid #444;
+  background: rgba(255,255,255,0.08);
+  backdrop-filter: blur(10px);
+  color: white;
+  font-size: 22px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.navArrow:hover:not(:disabled) {
+  background: rgba(255,255,255,0.18);
+  border-color: #666;
+}
+
+.navArrow:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+.themeName {
+  flex: 1;
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: white;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.themeIndicator {
+  text-align: center;
+  font-size: 0.75rem;
+  color: rgba(255,255,255,0.4);
+  margin-bottom: 12px;
+}
+/* ────────────────────────────────────────────────────────────── */
+
 .closeBtn {
   margin-top: 10px;
   width: 100%;
@@ -127,8 +182,42 @@
   animation: pulse 2s infinite;
 }
 
+.waitingOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.spinner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 60px; /* Offset to not overlap banner if it's there */
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 @keyframes pulse {
   0% { opacity: 0.6; transform: translateX(-50%) scale(0.95); }
   50% { opacity: 1; transform: translateX(-50%) scale(1); }
   100% { opacity: 0.6; transform: translateX(-50%) scale(0.95); }
+}
+
+.masterIndicator {
+  position: absolute;
+  bottom: 15px;
+  left: 15px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: 0 0 10px rgba(76, 175, 80, 0.8), 0 0 20px rgba(76, 175, 80, 0.4);
+  z-index: 30;
+  pointer-events: none;
 }

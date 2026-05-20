@@ -48,6 +48,13 @@ export type InputDescriptor = Axis2DDescriptor | ButtonDescriptor | BooleanDescr
 export interface InputPatch {
   controllerId: string;
   id: string;
+  /**
+   * Identifiant stable de la zone physique.
+   * Égal à `id` pour les zones uniques.
+   * Suffixé `__0`, `__1`… pour les zones SVG partageant le même id (ex: deux joysticks).
+   * Permet au serveur de toujours distinguer quelle instance physique a été touchée.
+   */
+  zoneKey: string;
   value: InputValue;
 }
 

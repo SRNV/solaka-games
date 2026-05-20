@@ -6,6 +6,7 @@ export interface GamepadProps {
   roomId: string;
   controllerId: string;
   active?: boolean;
+  isMaster?: boolean;
 }
 
 type ButtonId = 'a' | 'b' | 'x' | 'y';

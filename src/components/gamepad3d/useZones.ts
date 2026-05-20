@@ -5,6 +5,8 @@ export const CAM_H = 5; // orthographic camera half-height (world units)
 
 export interface Zone {
   id: string;
+  /** Stable physical zone identifier — equals `id` for unique zones, `id__0/1/…` for SVG duplicates */
+  zoneKey: string;
   inputType: 'joystick' | 'button';
   isBoolean: boolean; // true → emit BooleanValue (no duration)
   // screen-space (px) — touch hit testing
@@ -75,7 +77,7 @@ export function computeZones(vpW: number, vpH: number, descriptors: InputDescrip
     }
     const [wx, wy] = toWorld(cx, cy, vpW, vpH);
     zones.push({
-      id: d.id, inputType: 'joystick', isBoolean: false,
+      id: d.id, zoneKey: d.id, inputType: 'joystick', isBoolean: false,
       cx, cy, hitRadius: jsHit,
       wx, wy, wRadius: pxToWu(jsVisu, vpH),
       color: d.color ?? theme.joystick,
@@ -103,7 +105,7 @@ export function computeZones(vpW: number, vpH: number, descriptors: InputDescrip
     const cy = dCy + oy;
     const [wx, wy] = toWorld(cx, cy, vpW, vpH);
     zones.push({
-      id: d.id, inputType: 'button', isBoolean: d.type === 'boolean',
+      id: d.id, zoneKey: d.id, inputType: 'button', isBoolean: d.type === 'boolean',
       cx, cy, hitRadius: btnHit,
       wx, wy, wRadius: pxToWu(btnVisu, vpH),
       label: d.label, color: d.color ?? slotThemeColor(d.slot, theme),
@@ -121,7 +123,7 @@ export function computeZones(vpW: number, vpH: number, descriptors: InputDescrip
     const cy   = portrait ? vpH * 0.88 : vpH * 0.87;
     const [wx, wy] = toWorld(cx, cy, vpW, vpH);
     zones.push({
-      id: d.id, inputType: 'button', isBoolean: d.type === 'boolean',
+      id: d.id, zoneKey: d.id, inputType: 'button', isBoolean: d.type === 'boolean',
       cx, cy, hitRadius: cHit,
       wx, wy, wRadius: pxToWu(cVisu, vpH),
       label: d.label, color: d.color ?? theme.btnCenter,

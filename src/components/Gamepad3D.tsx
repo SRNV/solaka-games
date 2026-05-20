@@ -1,25 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useLayoutEffect } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { GamepadScene, GamepadSceneHandle } from './gamepad3d/GamepadScene.tsx';
-import { GamepadBackground } from './gamepad3d/GamepadBackground.tsx';
+import { SvgGamepadScene, type SvgGamepadSceneHandle } from './svgGamepad/SvgGamepadScene.tsx';
+import { useSvgZones } from '../hooks/useSvgZones.ts';
 import { computeZones, CAM_H } from './gamepad3d/useZones.ts';
 import { useGamepadInput } from './gamepad3d/useGamepadInput.ts';
-import { getGamesStompClient } from '../gamesStompClient.ts';
-import { THEMES, DEFAULT_THEME, findTheme } from './gamepad3d/themes.ts';
-import type { InputDescriptor, ControllerFrame } from '../types/inputs.ts';
+import { useGamepadCommon } from '../hooks/useGamepadCommon.ts';
+import { GamepadOverlay, SettingsModal } from './GamepadSharedUI.tsx';
+import type { InputDescriptor } from '../types/inputs.ts';
 import type { GamepadProps } from './Gamepad.tsx';
 import styles from './Gamepad3D.module.css';
 
 export interface Gamepad3DProps extends GamepadProps {
-  inputs: InputDescriptor[];
+  inputs?: InputDescriptor[];
+  svgUrl?: string;
 }
 
 function CameraAutoFit() {
   const { camera, size } = useThree();
   useLayoutEffect(() => {
-    const cam = camera as THREE.OrthographicCamera;
     if (size.height === 0) return;
+    const cam    = camera as THREE.OrthographicCamera;
     const aspect = size.width / size.height;
     cam.top    =  CAM_H;
     cam.bottom = -CAM_H;
@@ -30,64 +31,67 @@ function CameraAutoFit() {
   return null;
 }
 
-export function Gamepad3D({ roomId, controllerId, inputs, active = true }: Gamepad3DProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const sceneRef = useRef<GamepadSceneHandle>(null);
-  const [vp, setVp] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
-  const [themeId, setThemeId] = useState(() => localStorage.getItem('gamepad_theme') || DEFAULT_THEME.id);
-  const [showSettings, setShowSettings] = useState(false);
-  const [, setTick] = useState(0);
+export function Gamepad3D({ roomId, controllerId, inputs = [], svgUrl, active = true, isMaster }: Gamepad3DProps) {
+  const sceneRef    = useRef<SvgGamepadSceneHandle>(null);
+
+  const {
+    containerRef, vp, isPortrait, effectiveW, effectiveH,
+    showSettings, setShowSettings,
+    configEntries, navIndex, navigate,
+    currentEntry, theme, matcapTexture, matcapLoading,
+    publish, toggleFullscreen, screenCoords
+  } = useGamepadCommon(roomId, controllerId, active);
+
+  // ── Layout Logic ────────────────────────────────────────────
   
-  const theme = useMemo(() => findTheme(themeId), [themeId]);
+  // 1. SVG-based layout
+  const svgData = useSvgZones(
+    svgUrl ?? '', 
+    effectiveW, effectiveH, 
+    inputs, 
+    theme,
+  );
 
-  useLayoutEffect(() => {
-    const obs = new ResizeObserver(entries => {
-      if (!entries[0]) return;
-      const { width, height } = entries[0].contentRect;
-      setVp({ w: width, h: height });
-    });
-    if (containerRef.current) obs.observe(containerRef.current);
-    return () => obs.disconnect();
-  }, []);
+  // 2. Standard 3D layout (fallback or if no svgUrl)
+  const fallbackZones = useMemo(() => 
+    computeZones(effectiveW, effectiveH, inputs, theme), 
+    [effectiveW, effectiveH, inputs, theme]
+  );
 
-  const zones = useMemo(() => computeZones(vp.w, vp.h, inputs, theme), [vp.w, vp.h, inputs, theme]);
+  const isSvg = !!svgUrl && !svgData.error;
+  const zones = isSvg ? (svgData.zones.length ? svgData.zones : svgData.fallbackZones) : fallbackZones;
+  
   const zonesRef = useRef(zones);
   zonesRef.current = zones;
 
-  const publish = useCallback((patches: any[]) => {
-    if (!active) return;
-    const client = getGamesStompClient();
-    if (!client.connected) return;
-    
-    const frame: ControllerFrame = {
-      t: Date.now(),
-      patches
-    };
+  const viewportCenter = useMemo(() => {
+    if (!isSvg || !svgData.viewport) return undefined;
+    return { x: svgData.viewport.x + svgData.viewport.w / 2, y: svgData.viewport.y + svgData.viewport.h / 2 };
+  }, [isSvg, svgData.viewport]);
 
-    client.publish({
-      destination: `/topic/room/${roomId}/input`,
-      body: JSON.stringify(frame),
-    });
-  }, [roomId, active]);
+  // ── Input Handling ──────────────────────────────────────────
 
-  const onButtonDown = useCallback((zone: any) => {
-    sceneRef.current?.triggerExplosion(zone.wx, zone.wy, zone.color, zone.id);
-  }, []);
+  const onButtonDown = (zone: any, cx: number, cy: number) => {
+    const nx     = cx / vp.w;
+    const ny     = cy / vp.h;
+    const aspect = vp.w / vp.h;
+    const wx     = (nx * 2 - 1) * CAM_H * aspect;
+    const wy     = (1 - ny * 2) * CAM_H;
+    sceneRef.current?.triggerExplosion(wx, wy, zone.color, zone.id);
+  };
 
-  const input = useGamepadInput(zonesRef, controllerId, publish, onButtonDown, () => setTick(t => t + 1));
+  const findZoneOverride = (cx: number, cy: number) => {
+    return sceneRef.current?.hitTest(cx, cy) ?? null;
+  };
 
-  // Background reactivity
-  const bgState = useMemo(() => {
-    const js = zones.find(z => z.inputType === 'joystick');
-    const joystick = js ? input.getAxis(js.id) : { x: 0, y: 0 };
-    const isPressed = zones.some(z => input.isPressed(z.id));
-    return { joystick, isPressed };
-  }, [zones, input, vp]); // Recompute when viewport changes too
-
-  function screenCoords(e: React.PointerEvent): [number, number] {
-    const rect = containerRef.current!.getBoundingClientRect();
-    return [e.clientX - rect.left, e.clientY - rect.top];
-  }
+  const input = useGamepadInput(
+    zonesRef, 
+    controllerId, 
+    publish, 
+    onButtonDown, 
+    undefined, 
+    isSvg ? findZoneOverride : undefined
+  );
 
   function onPointerDown(e: React.PointerEvent) {
     if (showSettings) return;
@@ -96,26 +100,11 @@ export function Gamepad3D({ roomId, controllerId, inputs, active = true }: Gamep
     input.handleDown(e.pointerId, cx, cy);
   }
 
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      containerRef.current?.requestFullscreen().catch(err => {
-        console.error(`Error attempting to enable full-screen mode: ${err.message}`);
-      });
-    } else {
-      document.exitFullscreen();
-    }
-  };
-
-  const handleThemeChange = (id: string) => {
-    setThemeId(id);
-    localStorage.setItem('gamepad_theme', id);
-  };
-
   return (
     <div
       ref={containerRef}
       className={styles.container}
-      style={{ backgroundColor: theme.bg }}
+      style={{ backgroundColor: theme.bg, overflow: isPortrait ? 'visible' : 'hidden' }}
       onPointerDown={onPointerDown}
       onPointerMove={e => !showSettings && input.handleMove(e.pointerId, ...screenCoords(e))}
       onPointerUp={e => {
@@ -124,77 +113,91 @@ export function Gamepad3D({ roomId, controllerId, inputs, active = true }: Gamep
       }}
       onPointerCancel={e => input.handleUp(e.pointerId)}
     >
+      <GamepadOverlay active={active} theme={theme} loading={(isSvg && svgData.loading) || matcapLoading} />
 
-      <Canvas
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
-        orthographic
-        camera={{ position: [0, 0, 10], near: 0.1, far: 100 }}
-        gl={{ antialias: true, alpha: true }}
-      >
-        <CameraAutoFit />
-        <GamepadScene ref={sceneRef} zones={zones} input={input} theme={theme} />
-      </Canvas>
+      {isSvg && svgData.error && (
+        <div className={styles.waitingBanner} style={{ 
+          fontSize: '0.8rem', 
+          color: '#ffffff', 
+          backgroundColor: '#e05555',
+          padding: '4px 12px',
+          borderRadius: '4px',
+          fontWeight: 'bold',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
+          zIndex: 1000
+        }}>
+          ⚠️ {svgData.error}
+        </div>
+      )}
 
-      {/* HTML Labels */}
-      {zones.filter(z => z.label).map(zone => (
-        <div
-          key={zone.id}
-          className={styles.label}
-          style={{
-            left: zone.cx,
-            top: zone.cy,
-            fontSize: Math.max(Math.round(zone.hitRadius * 0.38), 11),
-            color: 'white',
-          }}
+      <div style={isPortrait ? {
+        position: 'absolute',
+        width: effectiveW,
+        height: effectiveH,
+        left: (vp.w - effectiveW) / 2,
+        top:  (vp.h - effectiveH) / 2,
+        transform: 'rotate(-90deg)',
+        transformOrigin: 'center center',
+      } : {
+        position: 'absolute',
+        inset: 0,
+      }}>
+        <Canvas
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+          orthographic
+          camera={{ position: [0, 0, 10], near: 0.1, far: 100 }}
+          gl={{ antialias: true, alpha: false }}
         >
-          {zone.label}
-        </div>
-      ))}
+          <CameraAutoFit />
+          <SvgGamepadScene
+            ref={sceneRef}
+            zones={zones}
+            input={input}
+            theme={theme}
+            svgToWorldMatrix={isSvg ? svgData.svgToWorldMatrix : new THREE.Matrix4()}
+            viewportCenter={viewportCenter}
+            matcapTexture={matcapTexture}
+            outlineColor={theme.outlineColor}
+            isStandalone={!isSvg}
+          />
+        </Canvas>
 
-      {/* Settings Icon */}
-      <button 
-        className={styles.settingsBtn} 
-        onClick={() => setShowSettings(!showSettings)}
-      >
-        ⚙️
-      </button>
-
-      {/* Fullscreen Icon */}
-      <button 
-        className={styles.fullscreenBtn} 
-        onClick={toggleFullscreen}
-      >
-        ⛶
-      </button>
-
-      {/* Waiting Indicator */}
-      {!active && (
-        <div className={styles.waitingBanner}>
-          En attente du démarrage...
-        </div>
-      )}
-
-      {/* Theme Overlay */}
-      {showSettings && (
-        <div className={styles.overlay} onClick={() => setShowSettings(false)}>
-          <div className={styles.modal} onClick={e => e.stopPropagation()}>
-            <h3>Personnalisation</h3>
-            <div className={styles.themeGrid}>
-              {THEMES.map(t => (
-                <button 
-                  key={t.id} 
-                  className={`${styles.themeOption} ${t.id === themeId ? styles.active : ''}`}
-                  style={{ '--theme-color': t.joystick } as any}
-                  onClick={() => handleThemeChange(t.id)}
-                >
-                  {t.name}
-                </button>
-              ))}
-            </div>
-            <button className={styles.closeBtn} onClick={() => setShowSettings(false)}>Fermer</button>
+        {zones.filter(z => z.label).map(zone => (
+          <div
+            key={zone.id}
+            className={styles.label}
+            style={{
+              left: zone.cx,
+              top:  zone.cy,
+              fontSize: Math.max(Math.round(zone.hitRadius * 0.38), 11),
+              color: 'white',
+              pointerEvents: 'none',
+            }}
+          >
+            {zone.label}
           </div>
-        </div>
+        ))}
+      </div>
+
+      <button className={styles.settingsBtn}   onClick={() => setShowSettings(!showSettings)}>⚙️</button>
+      <button className={styles.fullscreenBtn} onClick={toggleFullscreen}>⛶</button>
+
+      {isMaster && (
+        <div 
+          className={styles.masterIndicator} 
+          title="Vous êtes le maître de la partie"
+          style={{ backgroundColor: '#4CAF50' }}
+        />
       )}
+
+      <SettingsModal 
+        show={showSettings}
+        onClose={() => setShowSettings(false)}
+        navIndex={navIndex}
+        configEntries={configEntries}
+        currentEntry={currentEntry}
+        onNavigate={navigate}
+      />
     </div>
   );
 }

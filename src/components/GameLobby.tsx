@@ -1,14 +1,16 @@
 import QRCode from 'react-qr-code';
 import styles from './GameLobby.module.css';
+import type { ControllerDisplay } from '../hooks/useGameRoom.ts';
 
 interface Props {
   gameName: string;
   roomUrl: string;
-  controllerCount: number;
+  controllers: ControllerDisplay[];
   onStart: () => void;
 }
 
-export function GameLobby({ gameName, roomUrl, controllerCount, onStart }: Props) {
+export function GameLobby({ gameName, roomUrl, controllers, onStart }: Props) {
+  const connectedCount = controllers.filter(c => c.isConnected).length;
   return (
     <div className={styles.lobby}>
       <div className={styles.card}>
@@ -23,19 +25,39 @@ export function GameLobby({ gameName, roomUrl, controllerCount, onStart }: Props
           )}
         </div>
 
-        <p className={styles.url}>{roomUrl}</p>
+        {import.meta.env.DEV ? (
+          <button 
+            className={styles.devOpenBtn} 
+            onClick={() => window.open(roomUrl, '_blank')}
+          >
+            Ouvrir une manette
+          </button>
+        ) : (
+          <p className={styles.url}>{roomUrl}</p>
+        )}
 
         <div className={styles.controllers}>
-          <span className={styles.count}>{controllerCount}</span>
+          <span className={styles.count}>{connectedCount}</span>
           <span className={styles.countLabel}>
-            {controllerCount === 1 ? 'manette connectée' : 'manettes connectées'}
+            {connectedCount === 1 ? 'manette connectée' : 'manettes connectées'}
           </span>
         </div>
+
+        {controllers.length > 0 && (
+          <ul className={styles.pseudoList}>
+            {controllers.map(c => (
+              <li key={c.id} className={c.isConnected ? styles.pseudoOnline : styles.pseudoOffline}>
+                {c.pseudo}
+                {!c.isConnected && ' (reconnexion…)'}
+              </li>
+            ))}
+          </ul>
+        )}
 
         <button
           className={styles.startBtn}
           onClick={onStart}
-          disabled={controllerCount === 0}
+          disabled={connectedCount === 0}
         >
           Prêt — Démarrage de partie
         </button>

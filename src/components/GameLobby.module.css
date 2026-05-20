@@ -56,6 +56,23 @@
   max-width: 280px;
 }
 
+.devOpenBtn {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  color: var(--accent, #D4AC0D);
+  background: transparent;
+  border: 1px solid var(--accent, #D4AC0D);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.devOpenBtn:hover {
+  background: var(--accent, #D4AC0D);
+  color: #0f0f0f;
+}
+
 .controllers {
   display: flex;
   align-items: baseline;
@@ -94,4 +111,31 @@
 
 .startBtn:not(:disabled):hover {
   opacity: 0.85;
+}
+
+.pseudoList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.pseudoOnline {
+  font-size: 0.8rem;
+  color: var(--text, #ccc);
+  padding: 0.2rem 0.5rem;
+  background: #1f2a1f;
+  border-radius: 0.25rem;
+}
+
+.pseudoOffline {
+  font-size: 0.8rem;
+  color: #666;
+  padding: 0.2rem 0.5rem;
+  background: #1a1a1a;
+  border-radius: 0.25rem;
+  font-style: italic;
 }

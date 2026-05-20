@@ -1,56 +1,99 @@
 import { useEffect, useRef, useState } from 'react';
 import { getGamesStompClient, onGamesStompConnect } from '../gamesStompClient.ts';
-import { randomUUID } from '../uuid.ts';
 import type { ControllerFrame } from '../types/inputs.ts';
 
 export type RoomPhase = 'lobby' | 'playing';
 
+export interface ControllerDisplay {
+  id: string;
+  pseudo: string;
+  isConnected: boolean;
+}
+
 export interface UseGameRoomResult {
-  roomId: string;
   roomUrl: string;
+  controllers: ControllerDisplay[];
   controllerCount: number;
   phase: RoomPhase;
+  roomClosed: boolean;
   start: () => void;
+}
+
+function buildControllerUrl(slug: string, roomId: string): string {
+  const host = import.meta.env.VITE_GAME_HOST || window.location.origin;
+  return `${host}/games/${slug}/${roomId}`;
 }
 
 export function useGameRoom(
   slug: string,
+  roomId: string,
   onInput?: (frame: ControllerFrame) => void,
 ): UseGameRoomResult {
-  const roomId = useRef(randomUUID()).current;
   const [phase, setPhase] = useState<RoomPhase>('lobby');
-  const [controllerCount, setControllerCount] = useState(0);
-  const [roomUrl, setRoomUrl] = useState('');
+  const [controllers, setControllers] = useState<ControllerDisplay[]>([]);
+  const [roomClosed, setRoomClosed] = useState(false);
   const onInputRef = useRef(onInput);
   onInputRef.current = onInput;
 
+  const roomUrl = buildControllerUrl(slug, roomId);
+
+  // Hydrate room state on mount — supports console page reload/reconnect
   useEffect(() => {
-    const host = import.meta.env.VITE_GAME_HOST || window.location.origin;
-    setRoomUrl(`${host}/games/${slug}/${roomId}`);
+    fetch(`/games-api/api/rooms/${roomId}`)
+      .then(res => {
+        if (!res.ok) { setRoomClosed(true); return null; }
+        return res.json() as Promise<any>;
+      })
+      .then(data => {
+        if (!data) return;
+        if (data.Started) setPhase('playing');
+        if (Array.isArray(data.Controllers)) {
+          setControllers(data.Controllers.map((c: any) => ({
+            id: c.Id ?? c.id,
+            pseudo: c.Pseudo ?? c.pseudo,
+            isConnected: c.IsConnected ?? c.isConnected,
+          })));
+        }
+      })
+      .catch(() => setRoomClosed(true));
+  }, [roomId]);
 
-    fetch('/games-api/api/rooms', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ roomId, slug }),
-    });
-
+  useEffect(() => {
     const cancel = onGamesStompConnect(() => {
       const client = getGamesStompClient();
+
       const subs = [
         client.subscribe(`/topic/room/${roomId}`, (msg) => {
-          const event = JSON.parse(msg.body);
-          if (event.type === 'controller_joined') setControllerCount(event.count);
-          else if (event.type === 'game_started') setPhase('playing');
+          const event = JSON.parse(msg.body) as Record<string, unknown>;
+
+          const updatesControllers = (
+            event.type === 'controller_joined' ||
+            event.type === 'controller_reconnected' ||
+            event.type === 'controller_disconnected' ||
+            event.type === 'controller_ghosted'
+          );
+          if (updatesControllers && Array.isArray(event.controllers)) {
+            setControllers((event.controllers as any[]).map((c: any) => ({
+              id: c.Id ?? c.id,
+              pseudo: c.Pseudo ?? c.pseudo,
+              isConnected: c.IsConnected ?? c.isConnected,
+            })));
+          }
+
+          if (event.type === 'game_started') setPhase('playing');
+          if (event.type === 'room_closed') setRoomClosed(true);
         }),
+
         client.subscribe(`/topic/room/${roomId}/input`, (msg) => {
           onInputRef.current?.(JSON.parse(msg.body) as ControllerFrame);
         }),
       ];
+
       return () => subs.forEach(s => s.unsubscribe());
     });
 
     return cancel;
-  }, [slug, roomId]);
+  }, [roomId]);
 
   function start() {
     const client = getGamesStompClient();
@@ -61,5 +104,12 @@ export function useGameRoom(
     setPhase('playing');
   }
 
-  return { roomId, roomUrl, controllerCount, phase, start };
+  return {
+    roomUrl,
+    controllers,
+    controllerCount: controllers.filter(c => c.isConnected).length,
+    phase,
+    roomClosed,
+    start,
+  };
 }
