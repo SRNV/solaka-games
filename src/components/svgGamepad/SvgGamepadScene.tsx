@@ -148,9 +148,8 @@ function OutlineEffect({ meshesRef, outlineColor = '#ffffff' }: {
   useFrame(() => {
     if (!composerRef.current || !outlinePassRef.current) return;
     const meshes = Array.from(meshesRef.current.values());
-    if (outlinePassRef.current.selectedObjects.length !== meshes.length) {
-      outlinePassRef.current.selectedObjects = meshes;
-    }
+    // Update selected objects every frame to ensure we don't have stale/disposed references
+    outlinePassRef.current.selectedObjects = meshes;
     composerRef.current.render();
   }, 1);
 
@@ -188,12 +187,12 @@ function JoystickGLB({
     return new THREE.MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: isPressed ? 2.5 : 0.5,
+      emissiveIntensity: 0.5,
       roughness: isMetallic ? 0.1 : 0.3,
       metalness: isMetallic ? 0.9 : 0.2,
       side: THREE.DoubleSide
     });
-  }, [matcapTexture, color, isPressed, isMetallic]);
+  }, [matcapTexture, color, isMetallic]);
 
   const clonedScene = useMemo(() => {
     const clone = scene.clone(true);
@@ -412,6 +411,13 @@ export const SvgGamepadScene = forwardRef<SvgGamepadSceneHandle, Props>(
           if (stickGroup) {
             stickGroup.position.copy(_v2);
             stickGroup.lookAt(_v1);
+            // Update intensity of all meshes inside stickGroup (head/stick)
+            stickGroup.traverse(child => {
+              if ((child as THREE.Mesh).isMesh) {
+                const m = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
+                if (m && m.emissive) m.emissiveIntensity = isPressed ? 2.5 : 0.5;
+              }
+            });
           }
 
           const baseMesh = meshesRef.current.get(`${z.zoneKey}_base`);
@@ -610,16 +616,18 @@ function ParticlesInstances({ particles }: { particles: Particle[] }) {
 
   useFrame(() => {
     if (!meshRef.current) return;
-    particles.forEach((p, i) => {
+    const count = Math.min(particles.length, 1000);
+    for (let i = 0; i < count; i++) {
+      const p = particles[i];
       dummy.position.copy(p.pos);
       const s = p.life * 0.12;
       dummy.scale.set(s, s, s);
       dummy.updateMatrix();
-      meshRef.current!.setMatrixAt(i, dummy.matrix);
+      meshRef.current.setMatrixAt(i, dummy.matrix);
       color.set(p.color);
-      meshRef.current!.setColorAt!(i, color);
-    });
-    meshRef.current.count = particles.length;
+      meshRef.current.setColorAt!(i, color);
+    }
+    meshRef.current.count = count;
     meshRef.current.instanceMatrix.needsUpdate = true;
     if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
   });

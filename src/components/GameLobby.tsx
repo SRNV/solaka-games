@@ -26,8 +26,8 @@ export function GameLobby({ gameName, roomUrl, controllers, onStart }: Props) {
         </div>
 
         {import.meta.env.DEV ? (
-          <button 
-            className={styles.devOpenBtn} 
+          <button
+            className={styles.devOpenBtn}
             onClick={() => window.open(roomUrl, '_blank')}
           >
             Ouvrir une manette
@@ -59,7 +59,7 @@ export function GameLobby({ gameName, roomUrl, controllers, onStart }: Props) {
           onClick={onStart}
           disabled={connectedCount === 0}
         >
-          Prêt — Démarrage de partie
+          Start
         </button>
       </div>
     </div>

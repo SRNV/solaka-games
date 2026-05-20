@@ -23,14 +23,14 @@ export function Spinner({ color }: { color: string }) {
   );
 }
 
-export function GamepadOverlay({ active, theme, loading }: { 
-  active: boolean; 
-  theme: GamepadTheme; 
+export function GamepadOverlay({ active, theme, loading }: {
+  active: boolean;
+  theme: GamepadTheme;
   loading: boolean;
 }) {
   return (
     <>
-      {loading && <Spinner color={theme.outlineColor} />}
+      {!active && loading && <Spinner color={theme.outlineColor} />}
       {!active && (
         <div className={styles.waitingOverlay}>
           <Spinner color={theme.outlineColor} />

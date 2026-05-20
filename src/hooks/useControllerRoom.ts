@@ -21,10 +21,13 @@ const PING_INTERVAL_MS = 12_000;
 function getOrCreateControllerId(roomId: string): string {
   const key = `${CTRL_ID_PREFIX}${roomId}`;
   try {
-    let id = localStorage.getItem(key);
+    // sessionStorage est isolé par onglet : deux onglets dans le même navigateur
+    // obtiennent des UUIDs différents (multi-joueur sur même machine).
+    // Il survit au rechargement de la page dans le même onglet (reconnexion OK).
+    let id = sessionStorage.getItem(key);
     if (!id) {
       id = randomUUID();
-      localStorage.setItem(key, id);
+      sessionStorage.setItem(key, id);
     }
     return id;
   } catch {
@@ -90,9 +93,10 @@ export function useControllerRoom(
 
       // Extract current room phase from registration response
       const body = await res.json().catch(() => ({}));
-      if (body.phase === 'playing') {
+      const phase = body.Phase ?? body.phase; // C# serializes PascalCase
+      if (phase === 'playing') {
         setPhase('playing');
-      } else if (body.phase === 'waiting') {
+      } else if (phase === 'waiting') {
         setPhase('waiting');
       }
 
@@ -123,19 +127,10 @@ export function useControllerRoom(
     // STOMP — re-subscribed automatically on every (re)connect by onGamesStompConnect
     const cancelConnect = onGamesStompConnect(async () => {
       setStatus('connected');
-      
-      // Re-register via HTTP if needed, to ensure the server knows our pseudo/id
-      // before we link the STOMP session.
-      await register();
 
       const client = getGamesStompClient();
 
-      // Re-link session after reconnect
-      client.publish({
-        destination: '/app/register',
-        body: JSON.stringify({ roomId, controllerId }),
-      });
-
+      // Souscription AVANT toute opération async — ne peut pas manquer game_started
       const sub = client.subscribe(`/topic/room/${roomId}`, (msg) => {
         const event = JSON.parse(msg.body) as Record<string, unknown>;
         if (event.type === 'game_started') setPhase('playing');
@@ -151,6 +146,14 @@ export function useControllerRoom(
           const connected = event.controllers.filter((c: any) => c.isConnected);
           setIsMaster(connected[0]?.id === controllerId);
         }
+      }, { 'x-controller-id': controllerId });
+
+      // Re-register via HTTP, puis re-lier la session STOMP
+      await register();
+
+      client.publish({
+        destination: '/app/register',
+        body: JSON.stringify({ roomId, controllerId }),
       });
 
       startPing();
@@ -171,6 +174,21 @@ export function useControllerRoom(
       stopPing();
     };
   }, [roomId, pseudoConfirmed]);
+
+  // Filet de sécurité : si le broadcast STOMP game_started n'est pas reçu,
+  // on détecte le démarrage via HTTP toutes les 3 s (arrêté dès que playing)
+  useEffect(() => {
+    if (!registered || phase === 'playing') return;
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch(`/games-api/api/rooms/${roomId}`);
+        if (!res.ok) return;
+        const data = await res.json() as Record<string, unknown>;
+        if (data.Started || data.started) setPhase('playing');
+      } catch { /* réseau indisponible */ }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [registered, phase, roomId]);
 
   return {
     phase,

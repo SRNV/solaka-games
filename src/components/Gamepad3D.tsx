@@ -6,6 +6,8 @@ import { useSvgZones } from '../hooks/useSvgZones.ts';
 import { computeZones, CAM_H } from './gamepad3d/useZones.ts';
 import { useGamepadInput } from './gamepad3d/useGamepadInput.ts';
 import { useGamepadCommon } from '../hooks/useGamepadCommon.ts';
+import { usePseudo } from '../hooks/usePseudo.ts';
+import { useWakeLock } from '../hooks/useWakeLock.ts';
 import { GamepadOverlay, SettingsModal } from './GamepadSharedUI.tsx';
 import type { InputDescriptor } from '../types/inputs.ts';
 import type { GamepadProps } from './Gamepad.tsx';
@@ -41,6 +43,9 @@ export function Gamepad3D({ roomId, controllerId, inputs = [], svgUrl, active = 
     currentEntry, theme, matcapTexture, matcapLoading,
     publish, toggleFullscreen, screenCoords
   } = useGamepadCommon(roomId, controllerId, active);
+
+  const { pseudo } = usePseudo();
+  useWakeLock(active);
 
   // ── Layout Logic ────────────────────────────────────────────
   
@@ -181,6 +186,11 @@ export function Gamepad3D({ roomId, controllerId, inputs = [], svgUrl, active = 
 
       <button className={styles.settingsBtn}   onClick={() => setShowSettings(!showSettings)}>⚙️</button>
       <button className={styles.fullscreenBtn} onClick={toggleFullscreen}>⛶</button>
+
+      <div className={styles.infoTag}>
+        <span className={styles.themeNameLabel}>{currentEntry.name}</span>
+        <span className={styles.pseudoLabel}>{pseudo}</span>
+      </div>
 
       {isMaster && (
         <div 
