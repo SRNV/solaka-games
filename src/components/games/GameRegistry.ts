@@ -23,4 +23,8 @@ export const GAME_REGISTRY: Record<string, GameEntry> = {
     console:    lazy(() => import('../../lib/metel/Metel.tsx')),
     controller: lazy(() => import('../../lib/metel/MetelController.tsx')),
   },
+  'verse-battle': {
+    console:    lazy(() => import('../../lib/versebattle/VerseBattle.tsx')),
+    controller: lazy(() => import('../../lib/versebattle/VerseBattleController.tsx')),
+  },
 };
