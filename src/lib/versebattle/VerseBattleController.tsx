@@ -8,7 +8,7 @@ export default function VerseBattleController({ roomId, controllerId, active, is
       controllerId={controllerId}
       active={active}
       isMaster={isMaster}
-      svgUrl="/manette_1.svg"
+      svgUrl="/manette_2.svg"
     />
   );
 }
