@@ -186,7 +186,7 @@ export function useSvgZones(
         setParsed(null);
       })
       .finally(() => setLoading(false));
-  }, [svgUrl, descriptors, theme]);
+  }, [svgUrl]);
 
   // Recompute zones + matrix whenever parsed data or viewport size changes
   const { zones, error: logicError } = useMemo(

@@ -65,6 +65,7 @@ export function useGamepadInput(
     const patches: InputPatch[] = [];
 
     if (zone.inputType === 'joystick') {
+      if (navigator.vibrate) navigator.vibrate([30]); // Array syntax
       // Pour les joysticks, on définit le centre de l'axe au moment du premier touché
       // pour éviter le "saut" si on ne touche pas exactement le centre visuel.
       activeAxes.current.set(pointerId, { 
@@ -80,6 +81,7 @@ export function useGamepadInput(
       publishThrottled(patches);
     } else {
       if (!btnPressed.current.get(zone.zoneKey)) {
+        if (navigator.vibrate) navigator.vibrate([50]); // Array syntax
         onButtonDown?.(zone, cx, cy);
         activeButtons.current.set(pointerId, { zoneId: zone.id, zoneKey: zone.zoneKey, pressedAt: Date.now(), isBoolean: zone.isBoolean });
         btnPressed.current.set(zone.zoneKey, true);
