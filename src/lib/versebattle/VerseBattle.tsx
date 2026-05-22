@@ -1,17 +1,24 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGameRoom } from '../../hooks/useGameRoom.ts';
 import { GameLobby } from '../../components/GameLobby.tsx';
 import { GameSettingsOverlay } from '../../components/GameSettingsOverlay.tsx';
 import VerseBattleGame from './VerseBattleGame.tsx';
 import type { ControllerFrame } from '../../types/inputs.ts';
+import { bibleStore, type GameVerse } from '@/store/bible.store.ts';
 
 export interface ConsoleProps {
   roomId: string;
   slug: string;
+  onRoomClosed?: () => void;
 }
 
-export default function VerseBattle({ roomId, slug }: ConsoleProps) {
+export default function VerseBattle({ roomId, slug, onRoomClosed }: ConsoleProps) {
   const gameOnInputRef = useRef<(frame: ControllerFrame) => void>(() => {});
+  const [verses, setVerses] = useState<GameVerse[]>([]);
+
+  useEffect(() => {
+    bibleStore.randomVerses(60).then(setVerses).catch(console.error);
+  }, []);
 
   const onInput = useCallback((frame: ControllerFrame) => {
     gameOnInputRef.current(frame);
@@ -19,6 +26,8 @@ export default function VerseBattle({ roomId, slug }: ConsoleProps) {
 
   const { roomUrl, controllers, phase, roomClosed, start } =
     useGameRoom(slug, roomId, onInput);
+
+  useEffect(() => { if (roomClosed) onRoomClosed?.(); }, [roomClosed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (roomClosed) {
     return (
@@ -31,7 +40,7 @@ export default function VerseBattle({ roomId, slug }: ConsoleProps) {
   if (phase === 'playing') {
     return (
       <>
-        <VerseBattleGame controllers={controllers} gameOnInputRef={gameOnInputRef} />
+        <VerseBattleGame controllers={controllers} gameOnInputRef={gameOnInputRef} verses={verses} />
         <GameSettingsOverlay roomUrl={roomUrl} />
       </>
     );

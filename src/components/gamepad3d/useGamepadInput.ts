@@ -59,8 +59,13 @@ export function useGamepadInput(
     }
   }
 
+  const loggedOnce = useRef(false);
   function handleDown(pointerId: number, cx: number, cy: number) {
     const zone = findZone(cx, cy);
+    if (!loggedOnce.current) {
+      loggedOnce.current = true;
+      console.debug('[INPUT] handleDown', { cx, cy, zone: zone?.id ?? null, zones: zonesRef.current?.length });
+    }
     if (!zone) return;
     const patches: InputPatch[] = [];
 

@@ -33,7 +33,7 @@ function CameraAutoFit() {
   return null;
 }
 
-export function Gamepad3D({ roomId, controllerId, inputs = [], svgUrl, active = true, isMaster }: Gamepad3DProps) {
+export function Gamepad3D({ roomId, controllerId, inputs = [], svgUrl, active = true, isMaster, onReconnect }: Gamepad3DProps) {
   const sceneRef    = useRef<SvgGamepadSceneHandle>(null);
 
   const {
@@ -186,6 +186,7 @@ export function Gamepad3D({ roomId, controllerId, inputs = [], svgUrl, active = 
 
       <button className={styles.settingsBtn}   onClick={() => setShowSettings(!showSettings)}>⚙️</button>
       <button className={styles.fullscreenBtn} onClick={toggleFullscreen}>⛶</button>
+      <button className={styles.reconnectBtn} onClick={onReconnect} title="Reconnecter">↺</button>
 
       <div className={styles.infoTag}>
         <span className={styles.themeNameLabel}>{currentEntry.name}</span>

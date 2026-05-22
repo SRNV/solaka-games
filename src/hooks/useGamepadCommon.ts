@@ -120,12 +120,12 @@ export function useGamepadCommon(roomId: string, controllerId: string, active: b
   }, [configEntries]);
 
   const publish = useCallback((frame: ControllerFrame) => {
-    if (!active || !isGamesStompConnected()) return;
+    if (!isGamesStompConnected()) return;
     getGamesStompClient().publish({
-      destination: `/topic/room/${roomId}/input`,
-      body: JSON.stringify(frame),
+      destination: `/topic/room/${roomId}`,
+      body: JSON.stringify({ ...frame, type: 'input' }),
     });
-  }, [roomId, active]);
+  }, [roomId]);
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {

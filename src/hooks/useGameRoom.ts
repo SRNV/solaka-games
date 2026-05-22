@@ -62,34 +62,33 @@ export function useGameRoom(
     const cancel = onGamesStompConnect(() => {
       const client = getGamesStompClient();
 
-      const subs = [
-        client.subscribe(`/topic/room/${roomId}`, (msg) => {
-          const event = JSON.parse(msg.body) as Record<string, unknown>;
+      const sub = client.subscribe(`/topic/room/${roomId}`, (msg) => {
+        const event = JSON.parse(msg.body) as Record<string, unknown>;
 
-          const updatesControllers = (
-            event.type === 'controller_joined' ||
-            event.type === 'controller_reconnected' ||
-            event.type === 'controller_disconnected' ||
-            event.type === 'controller_ghosted'
-          );
-          if (updatesControllers && Array.isArray(event.controllers)) {
-            setControllers((event.controllers as any[]).map((c: any) => ({
-              id: c.Id ?? c.id,
-              pseudo: c.Pseudo ?? c.pseudo,
-              isConnected: c.IsConnected ?? c.isConnected,
-            })));
-          }
+        if (event.type === 'input') {
+          onInputRef.current?.(event as unknown as ControllerFrame);
+          return;
+        }
 
-          if (event.type === 'game_started') setPhase('playing');
-          if (event.type === 'room_closed') setRoomClosed(true);
-        }),
+        const updatesControllers = (
+          event.type === 'controller_joined' ||
+          event.type === 'controller_reconnected' ||
+          event.type === 'controller_disconnected' ||
+          event.type === 'controller_ghosted'
+        );
+        if (updatesControllers && Array.isArray(event.controllers)) {
+          setControllers((event.controllers as any[]).map((c: any) => ({
+            id: c.Id ?? c.id,
+            pseudo: c.Pseudo ?? c.pseudo,
+            isConnected: c.IsConnected ?? c.isConnected,
+          })));
+        }
 
-        client.subscribe(`/topic/room/${roomId}/input`, (msg) => {
-          onInputRef.current?.(JSON.parse(msg.body) as ControllerFrame);
-        }),
-      ];
+        if (event.type === 'game_started') setPhase('playing');
+        if (event.type === 'room_closed') setRoomClosed(true);
+      });
 
-      return () => subs.forEach(s => s.unsubscribe());
+      return () => sub.unsubscribe();
     });
 
     return cancel;

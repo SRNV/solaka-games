@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useGameRoom } from '../../hooks/useGameRoom.ts';
 import { GameLobby } from '../../components/GameLobby.tsx';
 import { GameSettingsOverlay } from '../../components/GameSettingsOverlay.tsx';
@@ -8,9 +8,10 @@ import type { ControllerFrame } from '../../types/inputs.ts';
 export interface ConsoleProps {
   roomId: string;
   slug: string;
+  onRoomClosed?: () => void;
 }
 
-export default function Metel({ roomId, slug }: ConsoleProps) {
+export default function Metel({ roomId, slug, onRoomClosed }: ConsoleProps) {
   // Délègue chaque frame d'input à MetelGame qui gère le binding controllerId → joueur
   const gameOnInputRef = useRef<(frame: ControllerFrame) => void>(() => {});
 
@@ -20,6 +21,8 @@ export default function Metel({ roomId, slug }: ConsoleProps) {
 
   const { roomUrl, controllers, phase, roomClosed, start } =
     useGameRoom(slug, roomId, onInput);
+
+  useEffect(() => { if (roomClosed) onRoomClosed?.(); }, [roomClosed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (roomClosed) {
     return (

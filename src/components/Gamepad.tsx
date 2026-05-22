@@ -7,6 +7,7 @@ export interface GamepadProps {
   controllerId: string;
   active?: boolean;
   isMaster?: boolean;
+  onReconnect?: () => void;
 }
 
 type ButtonId = 'a' | 'b' | 'x' | 'y';

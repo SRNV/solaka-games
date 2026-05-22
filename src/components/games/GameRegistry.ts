@@ -4,6 +4,7 @@ import type { GamepadProps } from '../Gamepad.tsx';
 export interface ConsoleProps {
   roomId: string;
   slug: string;
+  onRoomClosed?: () => void;
 }
 
 export type ConsoleComponent = LazyExoticComponent<ComponentType<ConsoleProps>>;

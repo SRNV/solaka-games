@@ -13,6 +13,7 @@ export interface UseControllerRoomResult {
   controllerId: string;
   isMaster: boolean;
   clearError: () => void;
+  reconnect: () => void;
 }
 
 const CTRL_ID_PREFIX = 'gamepad_ctrl_';
@@ -121,16 +122,16 @@ export function useControllerRoom(
   useEffect(() => {
     if (!pseudoConfirmed) return;
 
-    // Initial HTTP registration
-    register();
-
-    // STOMP — re-subscribed automatically on every (re)connect by onGamesStompConnect
-    const cancelConnect = onGamesStompConnect(async () => {
+    // STOMP — re-subscribed automatically on every (re)connect by onGamesStompConnect.
+    // Fires immediately if STOMP is already connected (handles initial registration too).
+    // Callback must be synchronous so gamesStompClient receives the cleanup fn directly
+    // (an async callback returns a Promise — calling it as cleanup fn throws TypeError).
+    const cancelConnect = onGamesStompConnect(() => {
       setStatus('connected');
 
       const client = getGamesStompClient();
 
-      // Souscription AVANT toute opération async — ne peut pas manquer game_started
+      // Subscribe BEFORE any async op — cannot miss game_started
       const sub = client.subscribe(`/topic/room/${roomId}`, (msg) => {
         const event = JSON.parse(msg.body) as Record<string, unknown>;
         if (event.type === 'game_started') setPhase('playing');
@@ -143,20 +144,17 @@ export function useControllerRoom(
           event.type === 'controller_ghosted'
         );
         if (updatesControllers && Array.isArray(event.controllers)) {
-          const connected = event.controllers.filter((c: any) => c.isConnected);
-          setIsMaster(connected[0]?.id === controllerId);
+          const connected = (event.controllers as any[]).filter(
+            (c: any) => c.IsConnected ?? c.isConnected
+          );
+          setIsMaster(
+            connected[0]?.Id === controllerId || connected[0]?.id === controllerId
+          );
         }
       }, { 'x-controller-id': controllerId });
 
-      // Re-register via HTTP, puis re-lier la session STOMP
-      await register();
-
-      client.publish({
-        destination: '/app/register',
-        body: JSON.stringify({ roomId, controllerId }),
-      });
-
-      startPing();
+      // Register via HTTP (also links STOMP session inside register()) then start ping.
+      register().then(() => startPing());
 
       return () => {
         sub.unsubscribe();
@@ -198,5 +196,6 @@ export function useControllerRoom(
     controllerId,
     isMaster,
     clearError: () => setError(null),
+    reconnect: register,
   };
 }

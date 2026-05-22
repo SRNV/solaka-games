@@ -18,7 +18,7 @@
   z-index: 5;
 }
 
-.settingsBtn, .fullscreenBtn {
+.settingsBtn, .fullscreenBtn, .reconnectBtn {
   position: absolute;
   top: 15px;
   width: 44px;
@@ -39,8 +39,9 @@
 
 .settingsBtn { right: 15px; }
 .fullscreenBtn { right: 70px; }
+.reconnectBtn { right: 125px; }
 
-.settingsBtn:hover, .fullscreenBtn:hover {
+.settingsBtn:hover, .fullscreenBtn:hover, .reconnectBtn:hover {
   background: rgba(255, 255, 255, 0.2);
 }
 
@@ -212,7 +213,7 @@
 
 .masterIndicator {
   position: absolute;
-  bottom: 15px;
+  top: 15px;
   left: 15px;
   width: 12px;
   height: 12px;
@@ -225,7 +226,7 @@
 .infoTag {
   position: absolute;
   top: 15px;
-  right: 125px; /* next to fullscreen (70) + width (44) + gap */
+  right: 180px; /* next to reconnect (125) + width (44) + gap */
   display: flex;
   flex-direction: column;
   align-items: flex-end;
