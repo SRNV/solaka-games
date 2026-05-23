@@ -22,13 +22,11 @@ const PING_INTERVAL_MS = 12_000;
 function getOrCreateControllerId(roomId: string): string {
   const key = `${CTRL_ID_PREFIX}${roomId}`;
   try {
-    // sessionStorage est isolé par onglet : deux onglets dans le même navigateur
-    // obtiennent des UUIDs différents (multi-joueur sur même machine).
-    // Il survit au rechargement de la page dans le même onglet (reconnexion OK).
-    let id = sessionStorage.getItem(key);
+    // localStorage permet de survivre à la fermeture de l'onglet/navigateur.
+    let id = localStorage.getItem(key);
     if (!id) {
       id = randomUUID();
-      sessionStorage.setItem(key, id);
+      localStorage.setItem(key, id);
     }
     return id;
   } catch {

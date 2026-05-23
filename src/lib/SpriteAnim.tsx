@@ -26,6 +26,7 @@ export interface SpriteAnimDef {
   fps:          number;
   scale:        number | [number, number]; // fixed or [min, max] random
   billboard?:   boolean;             // default true
+  randomRotation?: boolean;          // if true, sprite is randomly rotated
   renderOrder?: number;              // default 999
   depthTest?:   boolean;             // default false
 }
@@ -48,6 +49,7 @@ interface AnimInstance {
   def:      SpriteAnimDef;
   x: number; y: number; z: number;
   scale:    number;
+  rotation: number;
 }
 
 let _nextId = 0;
@@ -117,8 +119,14 @@ function SpriteAnim({ inst, onDone }: { inst: AnimInstance; onDone: (id: number)
       return;
     }
     uniforms.uFrame.value = frame;
-    if ((def.billboard ?? true) && meshRef.current) {
-      meshRef.current.quaternion.copy(camera.quaternion);
+
+    if (meshRef.current) {
+      if (def.billboard ?? true) {
+        meshRef.current.quaternion.copy(camera.quaternion);
+      }
+      if (inst.rotation !== 0) {
+        meshRef.current.rotateZ(inst.rotation);
+      }
     }
   });
 
@@ -149,7 +157,8 @@ export function SpriteAnimLayer() {
       const scale = Array.isArray(raw)
         ? raw[0] + Math.random() * (raw[1] - raw[0])
         : raw;
-      setInstances(prev => [...prev, { id: _nextId++, def, x, y, z, scale }]);
+      const rotation = def.randomRotation ? Math.random() * Math.PI * 2 : 0;
+      setInstances(prev => [...prev, { id: _nextId++, def, x, y, z, scale, rotation }]);
     };
     return () => { _play = () => {}; };
   }, []);

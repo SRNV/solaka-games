@@ -23,12 +23,30 @@ export function Gamepad({ roomId, controllerId }: GamepadProps) {
   const publish = useCallback(() => {
     const client = getGamesStompClient();
     if (!client.connected) return;
-    client.publish({
-      destination: `/topic/room/${roomId}/input`,
-      body: JSON.stringify({
+
+    // Convert to unified ControllerFrame format
+    const now = Date.now();
+    const patches = [
+      {
         controllerId,
-        joystick: joystick.current,
-        buttons: Array.from(new Set(pointerBtn.current.values())),
+        id: 'joystick_left',
+        zoneKey: 'joystick_left',
+        value: { type: 'axis2d' as const, x: joystick.current.x, y: joystick.current.y }
+      },
+      ...Array.from(pointerBtn.current.values()).map(btnId => ({
+        controllerId,
+        id: `btn_${btnId}`,
+        zoneKey: `btn_${btnId}`,
+        value: { type: 'boolean' as const, pressed: true }
+      }))
+    ];
+
+    client.publish({
+      destination: `/topic/room/${roomId}`,
+      body: JSON.stringify({
+        t: now,
+        patches,
+        type: 'input',
       }),
     });
   }, [roomId, controllerId]);

@@ -48,7 +48,7 @@ export default function VerseBattle({ roomId, slug, onRoomClosed }: ConsoleProps
 
   return (
     <GameLobby
-      gameName="Verse Battle"
+      gameName="Bible Verse Battle"
       roomUrl={roomUrl}
       controllers={controllers}
       onStart={start}

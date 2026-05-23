@@ -1116,18 +1116,20 @@ const WRONG_ANSWER_ANIM: SpriteAnimDef = {
   fps:         30,
   scale:       [P_RADIUS * 2 * 3.5, P_RADIUS * 2 * 5.0],
   billboard:   true,
+  randomRotation: true,
   renderOrder: 999,
   depthTest:   false,
 };
 
 const HIT_ANIM: SpriteAnimDef = {
-  sheet:       '/games/verse_battle/impact/image.png',
-  frames:      15,
+  sheet:       '/games/verse_battle/impact/2_sheet.png',
+  frames:      5,
   cols:        5,
-  rows:        3,
-  fps:         30,
+  rows:        1,
+  fps:         15,
   scale:       [P_RADIUS * 2 * 3.0, P_RADIUS * 2 * 4.5],
   billboard:   true,
+  randomRotation: true,
   renderOrder: 999,
   depthTest:   false,
 };
