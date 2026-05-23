@@ -40,7 +40,7 @@ export default function VerseBattle({ roomId, slug, onRoomClosed }: ConsoleProps
   if (phase === 'playing') {
     return (
       <>
-        <VerseBattleGame controllers={controllers} gameOnInputRef={gameOnInputRef} verses={verses} />
+        <VerseBattleGame controllers={controllers} gameOnInputRef={gameOnInputRef} verses={verses} roomId={roomId} />
         <GameSettingsOverlay roomUrl={roomUrl} />
       </>
     );

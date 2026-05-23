@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { getGamesStompClient, onGamesStompConnect, onGamesStompDisconnect } from '../gamesStompClient.ts';
+import { getGamesStompClient, onGamesStompConnect, onGamesStompDisconnect, forceGamesStompReconnect } from '../gamesStompClient.ts';
 import { randomUUID } from '../uuid.ts';
 
 export type ControllerPhase = 'waiting' | 'playing';
@@ -196,6 +196,10 @@ export function useControllerRoom(
     controllerId,
     isMaster,
     clearError: () => setError(null),
-    reconnect: register,
+    reconnect: () => {
+      console.debug('[CONTROLLER] Manual reconnect requested');
+      forceGamesStompReconnect();
+      register();
+    },
   };
 }

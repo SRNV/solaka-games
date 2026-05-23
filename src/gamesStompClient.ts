@@ -89,3 +89,14 @@ export function onGamesStompDisconnect(cb: () => void): () => void {
 export function isGamesStompConnected(): boolean {
   return _client?.connected ?? false;
 }
+
+export function forceGamesStompReconnect(): void {
+  if (_client) {
+    console.debug('[GAMES STOMP] Forcing manual reconnect...');
+    _client.deactivate().then(() => {
+      _client?.activate();
+    });
+  } else {
+    getGamesStompClient();
+  }
+}

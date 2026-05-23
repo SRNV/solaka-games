@@ -5,6 +5,8 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { ControllerDisplay } from '../../hooks/useGameRoom.ts';
 import type { ControllerFrame, InputValue } from '../../types/inputs.ts';
+import { SpriteAnimService, SpriteAnimLayer, type SpriteAnimDef } from '../SpriteAnim.tsx';
+import { getGamesStompClient, isGamesStompConnected } from '../../gamesStompClient.ts';
 
 type ControllerState = Record<string, InputValue>;
 
@@ -41,10 +43,16 @@ const BEAM_PUSH    = 160;
 const FIRE_HZ      = 8;
 const CONE_HALF    = 0.06;
 
-const LANE_BOUND_X = 24 + LANE_WIDTH / 2;
-
-const PANEL_GROUPS  = [[0,1],[1,2],[2,3],[3,4],[4,5],[5,6]] as const;
+// Panel X slots: N positions centered on 0, pitch = W + W/10 (gap of W/10 between edges)
 const PANEL_WIDTH   = 8 + LANE_WIDTH;
+const PANEL_N_SLOTS = 4;
+const PANEL_PITCH   = PANEL_WIDTH * 1.1; // center-to-center = W + W/10
+const PANEL_SLOT_X: readonly number[] = Array.from(
+  { length: PANEL_N_SLOTS },
+  (_, i) => (i - (PANEL_N_SLOTS - 1) / 2) * PANEL_PITCH,
+); // e.g. [-22.275, -7.425, 7.425, 22.275] for W=13.5
+
+const LANE_BOUND_X = PANEL_SLOT_X[PANEL_N_SLOTS - 1] + PANEL_WIDTH / 2 + 1;
 const PANEL_H       = 21.0;
 const PANEL_D_MIN   = 5.0;
 const PANEL_D_MAX   = PANEL_D_MIN * 4;
@@ -99,8 +107,8 @@ function getDifficulty(round: number): Difficulty {
   const rampR = Math.max(0, round - 2);
   const pitchPattern = [0, 0, 0.2, 0.07, 0.5, 0.15, 0.7, 0.3, 1.0, 0.4];
   const pitchAmp = pitchPattern[Math.min(r, pitchPattern.length - 1)];
-  // Roll gate probability: 1/100 at round 1, 1/10 at round 20, linear
-  const rollGateProb = Math.min(0.1, 0.01 + r * (0.09 / 19));
+  // Roll gate probability: 0.25 at round 1 → 0.65 at round 20 (smooth gate, so feels natural)
+  const rollGateProb = Math.min(0.65, 0.25 + r * (0.40 / 19));
   return {
     maxEnemies:     Math.min(POOL_SIZE, MIN_ACTIVE + r * 4),
     enemySizeScale: 1 + r * 0.15,
@@ -129,27 +137,27 @@ type ClearableHandle = { startClear: () => void };
 // Roll angle is a spatial wave that scrolls toward the player at ~100 u/s,
 // so each twisted section keeps its orientation as it advances.
 // u = z * kz - t * (kz * 100) gives apparent scroll speed of 100 u/s.
-const MAX_TILT = Math.PI * 0.75;
 
-// Gate: two slow incommensurable sines → irregular on/off windows.
-// threshold = 1 - 2*prob ensures ~prob fraction of time is active.
-function rollGate(t: number): number {
-  const v = Math.sin(t * 0.11) * 0.6 + Math.sin(t * 0.073 + 1.7) * 0.4;
-  return v > 1.0 - 2.0 * _rollParams.gateProb ? 1.0 : 0.0;
-}
-
+// Roll is fixed per terrain section: u = z*kz - t*(kz*100) is constant for a point
+// moving at 100 u/s, so each section keeps its roll from horizon to end.
+// Gate is also a scrolling spatial wave → some sections roll, others don't.
+const ROLL_LIMIT = Math.PI / 4;
 function rollAngle(t: number, z: number): number {
-  if (rollGate(t) === 0) return 0;
-  const amp = Math.min(1, t / 40) * _rollParams.ampScale;
-  const kz  = 0.008 * _rollParams.freqScale;
-  const u   = z * kz - t * (kz * 100);
+  const kz    = 0.008 * _rollParams.freqScale;
+  const u     = z * kz - t * (kz * 100);
+  // Gate: slower scrolling wave → wide roll windows
+  const gateU    = u * 0.38;
+  const gateV    = Math.sin(gateU) * 0.6 + Math.sin(gateU * 0.66 + 1.7) * 0.4;
+  const threshold = 1.0 - 2.0 * _rollParams.gateProb;
+  const gate     = Math.max(0, Math.min(1, (gateV - (threshold - 0.35)) / 0.35));
+  if (gate === 0) return 0;
   const noise = (
     0.55 * Math.sin(u) +
     0.35 * Math.sin(u * 1.6 + 1.13) +
     0.22 * Math.sin(u * 2.5 + 2.71) +
     0.14 * Math.sin(u * 3.8 + 0.42)
   ) / 1.26;
-  return Math.max(-MAX_TILT, Math.min(MAX_TILT, amp * Math.PI * 0.45 * noise));
+  return Math.max(-ROLL_LIMIT, Math.min(ROLL_LIMIT, _rollParams.ampScale * gate * Math.PI * 0.45 * noise));
 }
 
 const MAX_PITCH = Math.PI / 3; // 60° hard limit
@@ -304,7 +312,7 @@ function CameraRig() {
     // Apply roll around camera-local Z (forward axis), pitch around local X (right axis)
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(tmp.quaternion);
     const right   = new THREE.Vector3(1, 0,  0).applyQuaternion(tmp.quaternion);
-    rollQuat.current.setFromAxisAngle(forward, _camTilt.roll);
+    rollQuat.current.setFromAxisAngle(forward, -_camTilt.roll);
     tiltQuat.current.setFromAxisAngle(right,   _camTilt.pitch);
     tmp.quaternion.premultiply(tiltQuat.current).premultiply(rollQuat.current);
 
@@ -429,18 +437,20 @@ void main() {
   float ly = tY(lx, aBaseZ);
 
   // Roll: spatial wave scrolling at ~100 u/s — each section keeps its twist.
-  float rollAmp = min(1.0, uTime / 40.0) * uRollAmpScale;
+  float rollAmp = uRollAmpScale;
   float kz = 0.008 * uRollFreqScale;
   float u = aBaseZ * kz - uTime * (kz * 100.0);
-  float gateV = sin(uTime * 0.11) * 0.6 + sin(uTime * 0.073 + 1.7) * 0.4;
-  float rollGate = step(1.0 - 2.0 * uRollGateProb, gateV);
+  float gateU     = u * 0.38;
+  float gateV     = sin(gateU) * 0.6 + sin(gateU * 0.66 + 1.7) * 0.4;
+  float threshold = 1.0 - 2.0 * uRollGateProb;
+  float rollGate  = clamp((gateV - (threshold - 0.35)) / 0.35, 0.0, 1.0);
   float noise = (
     0.55 * sin(u) +
     0.35 * sin(u * 1.6 + 1.13) +
     0.22 * sin(u * 2.5 + 2.71) +
     0.14 * sin(u * 3.8 + 0.42)
   ) / 1.26;
-  float phi = clamp(rollGate * rollAmp * 3.14159265 * 0.45 * noise, -3.14159265 * 0.75, 3.14159265 * 0.75);
+  float phi = clamp(rollGate * rollAmp * 3.14159265 * 0.45 * noise, -3.14159265 * 0.25, 3.14159265 * 0.25);
   float cosP = cos(phi), sinP = sin(phi);
   float wx = lx * cosP - ly * sinP;
   float wy = lx * sinP + ly * cosP;
@@ -862,6 +872,15 @@ function BeamManager({ spawnRef }: { spawnRef: React.MutableRefObject<SpawnBeam>
   return <group ref={groupRef} />;
 }
 
+function publishVibrate(roomId: string, controllerId: string) {
+  if (!isGamesStompConnected()) return;
+  const durationMs = Math.round(HIT_ANIM.frames / HIT_ANIM.fps * 1000);
+  getGamesStompClient().publish({
+    destination: `/topic/room/${roomId}`,
+    body: JSON.stringify({ type: 'vibrate', controllerId, durationMs }),
+  });
+}
+
 // ── PlayerSphereBody ──────────────────────────────────────────────────────────
 
 interface PlayerBodyProps {
@@ -870,13 +889,14 @@ interface PlayerBodyProps {
   enemyHandle: React.MutableRefObject<EnemyHandle>;
   spawnBeam: React.MutableRefObject<SpawnBeam>;
   playerPosRef: React.MutableRefObject<Map<string, THREE.Vector3>>;
+  roomId: string;
   boxHitRef: React.MutableRefObject<Map<string, number>>;
   zoneHandle: React.MutableRefObject<ZoneHandle>;
   color: string;
   initPos: [number, number, number];
 }
 
-function PlayerSphereBody({ controller, inputsMap, enemyHandle, spawnBeam, playerPosRef, boxHitRef, zoneHandle, initPos }: PlayerBodyProps) {
+function PlayerSphereBody({ controller, inputsMap, enemyHandle, spawnBeam, playerPosRef, boxHitRef, zoneHandle, initPos, roomId }: PlayerBodyProps) {
   const meshRef    = useRef<THREE.Mesh>(null);
   const labelRef   = useRef<THREE.Group>(null);
   const ringRef    = useRef<THREE.Group>(null);
@@ -931,7 +951,12 @@ function PlayerSphereBody({ controller, inputsMap, enemyHandle, spawnBeam, playe
 
     // Box collision impulse
     const boxHit = boxHitRef.current.get(controller.id);
-    if (boxHit !== undefined) { velX.current += boxHit; boxHitRef.current.delete(controller.id); }
+    if (boxHit !== undefined) {
+      velX.current += boxHit;
+      boxHitRef.current.delete(controller.id);
+      SpriteAnimService.play(HIT_ANIM, p.x, p.y, p.z);
+      publishVibrate(roomId, controller.id);
+    }
 
     // Enemy collision (in local unrolled space)
     if (!isInvincible) {
@@ -944,6 +969,9 @@ function PlayerSphereBody({ controller, inputsMap, enemyHandle, spawnBeam, playe
         const nx = dx / dist, nz = dz / dist, pushF = 12 + s.radius * 4;
         velX.current += nx * pushF; velZ.current += nz * pushF;
         p.x += nx * (minD - dist); p.z += nz * (minD - dist);
+        const wp = worldPos.current;
+        SpriteAnimService.play(HIT_ANIM, wp.x, wp.y, wp.z);
+        publishVibrate(roomId, controller.id);
       }
     }
 
@@ -1079,10 +1107,35 @@ function PlayerSphereBody({ controller, inputsMap, enemyHandle, spawnBeam, playe
   );
 }
 
+// ── Anim definitions ──────────────────────────────────────────────────────────
+
+const WRONG_ANSWER_ANIM: SpriteAnimDef = {
+  sheet:       '/games/verse_battle/impact/sheet.png',
+  frames:      5,
+  cols:        5,
+  fps:         30,
+  scale:       [P_RADIUS * 2 * 3.5, P_RADIUS * 2 * 5.0],
+  billboard:   true,
+  renderOrder: 999,
+  depthTest:   false,
+};
+
+const HIT_ANIM: SpriteAnimDef = {
+  sheet:       '/games/verse_battle/impact/image.png',
+  frames:      15,
+  cols:        5,
+  rows:        3,
+  fps:         30,
+  scale:       [P_RADIUS * 2 * 3.0, P_RADIUS * 2 * 4.5],
+  billboard:   true,
+  renderOrder: 999,
+  depthTest:   false,
+};
+
 // ── PanelManager ──────────────────────────────────────────────────────────────
 
 type PanelSlot = {
-  active:boolean; groupIdx:number; z:number; depth:number; meshIdx:number;
+  active:boolean; slotIdx:number; z:number; depth:number; meshIdx:number;
   born:number; zoneZ:number; zoneSpeed:number;
   zoneAnim:number; zoneEnterStart:number; zoneExiting:boolean; zoneExitStart:number;
   evaporating:boolean; evaporateStart:number; matched:boolean; colorIdx:number;
@@ -1092,6 +1145,7 @@ type PanelSlot = {
 
 interface PanelManagerProps {
   onResult: React.MutableRefObject<(correct: boolean, playerId: string) => void>;
+  onImpact: React.MutableRefObject<(x: number, y: number, z: number) => void>;
   onSkip: React.MutableRefObject<() => void>;
   zoneHandle: React.MutableRefObject<ZoneHandle>;
   batch: React.MutableRefObject<GameVerse[]>;
@@ -1102,7 +1156,7 @@ interface PanelManagerProps {
   playerPosRef: React.MutableRefObject<Map<string, THREE.Vector3>>;
 }
 
-function PanelManager({ onResult, onSkip, zoneHandle, batch, clearHandle, onClearDone, spawnEnabled, difficulty, playerPosRef }: PanelManagerProps) {
+function PanelManager({ onResult, onImpact, onSkip, zoneHandle, batch, clearHandle, onClearDone, spawnEnabled, difficulty, playerPosRef }: PanelManagerProps) {
   const isClearingRef = useRef(false);
   const currentVerseRef  = useRef<GameVerse | null>(null);
   const slots       = useRef<PanelSlot[]>([]);
@@ -1136,7 +1190,7 @@ function PanelManager({ onResult, onSkip, zoneHandle, batch, clearHandle, onClea
   useLayoutEffect(() => {
     const arr: PanelSlot[] = [];
     for (let i = 0; i < PANEL_POOL; i++)
-      arr.push({active:false,groupIdx:0,z:SPAWN_Z,depth:PANEL_D_MIN,meshIdx:i,
+      arr.push({active:false,slotIdx:0,z:SPAWN_Z,depth:PANEL_D_MIN,meshIdx:i,
         born:0,zoneZ:0,zoneSpeed:0,zoneAnim:0,zoneEnterStart:0,
         zoneExiting:false,zoneExitStart:0,evaporating:false,evaporateStart:0,matched:false,colorIdx:0,
         wobble:false,wobbleVel:0,offsetX:0,verseUuid:'',clearing:false,clearStart:0});
@@ -1147,14 +1201,17 @@ function PanelManager({ onResult, onSkip, zoneHandle, batch, clearHandle, onClea
         const now = performance.now();
         for (const s of arr) {
           if (!s.active || s.matched || s.evaporating || s.clearing) continue;
-          const g  = PANEL_GROUPS[s.groupIdx];
-          const cx = (LANE_X[g[0]] + LANE_X[g[1]]) / 2 + s.offsetX;
+          const cx = PANEL_SLOT_X[s.slotIdx] + s.offsetX;
           const hw = PANEL_WIDTH / 2 + P_RADIUS;
           const hd = s.depth / 2 + P_RADIUS;
           if (Math.abs(playerX - cx) > hw || Math.abs(playerZ - s.zoneZ) > hd) continue;
           const cv = currentVerseRef.current;
           const correct = cv !== null && s.verseUuid === cv.uuid;
           onResult.current(correct, playerId);
+          if (!correct) {
+            const wpos = playerPosRef.current.get(playerId);
+            if (wpos) onImpact.current(wpos.x, wpos.y, wpos.z);
+          }
           s.matched = true; s.zoneExiting = true; s.zoneExitStart = now;
           s.evaporating = true; s.evaporateStart = now;
           break;
@@ -1163,8 +1220,7 @@ function PanelManager({ onResult, onSkip, zoneHandle, batch, clearHandle, onClea
       getZoneColor(playerX, playerZ) {
         for (const s of arr) {
           if (!s.active || s.matched || s.evaporating || s.clearing) continue;
-          const g  = PANEL_GROUPS[s.groupIdx];
-          const cx = (LANE_X[g[0]] + LANE_X[g[1]]) / 2 + s.offsetX;
+          const cx = PANEL_SLOT_X[s.slotIdx] + s.offsetX;
           if (Math.abs(playerX - cx) > PANEL_WIDTH / 2 || Math.abs(playerZ - s.zoneZ) > s.depth / 2) continue;
           return mats[s.meshIdx].color;
         }
@@ -1209,7 +1265,7 @@ function PanelManager({ onResult, onSkip, zoneHandle, batch, clearHandle, onClea
           s.active = false; grp.visible = false; mats[s.meshIdx].opacity = 1; faceMats[s.meshIdx].opacity = 0.55;
         } else {
           const scY = 1 - ct;
-          const g = PANEL_GROUPS[s.groupIdx], cx = (LANE_X[g[0]] + LANE_X[g[1]]) / 2 + s.offsetX;
+          const cx = PANEL_SLOT_X[s.slotIdx] + s.offsetX;
           const [vwx, vwy] = applyRoll(cx, terrainY(cx, s.z, t) + PANEL_H / 2, t, s.z);
           grp.visible = true;
           grp.position.set(vwx, vwy, s.z);
@@ -1228,7 +1284,7 @@ function PanelManager({ onResult, onSkip, zoneHandle, batch, clearHandle, onClea
         if (s.zoneExiting && zone.visible) {
           const zt = Math.min(1, (now - s.zoneExitStart) / ZONE_ANIM_MS);
           s.zoneAnim = 1 - zt;
-          const g = PANEL_GROUPS[s.groupIdx], cx = (LANE_X[g[0]] + LANE_X[g[1]]) / 2;
+          const cx = PANEL_SLOT_X[s.slotIdx];
           const [wx, wy_z] = applyRoll(cx, terrainY(cx, s.zoneZ, t) + 0.05, t, s.zoneZ);
           zone.position.set(wx, wy_z, s.zoneZ);
           zone.quaternion.copy(surfaceQuat(cx, s.zoneZ, t, _squat));
@@ -1245,8 +1301,7 @@ function PanelManager({ onResult, onSkip, zoneHandle, batch, clearHandle, onClea
         s.active=false; grp.visible=false; zone.visible=false; continue;
       }
 
-      const g    = PANEL_GROUPS[s.groupIdx];
-      const cxBase = (LANE_X[g[0]] + LANE_X[g[1]]) / 2;
+      const cxBase = PANEL_SLOT_X[s.slotIdx];
 
       if (s.wobble) {
         s.offsetX += s.wobbleVel * delta;
@@ -1308,19 +1363,52 @@ function PanelManager({ onResult, onSkip, zoneHandle, batch, clearHandle, onClea
         now - lastSpawnMs.current >= 1000 / PANEL_HZ) {
       const slot = arr.find(s => !s.active);
       if (slot) {
-        const depth = PANEL_D_MIN + Math.random() * (PANEL_D_MAX - PANEL_D_MIN);
-        const zMin  = ZONE_MIN_Z + depth / 2, zMax = ZONE_MAX_Z - depth / 2;
-        const zoneZ = zMin + Math.random() * Math.max(0, zMax - zMin);
-        const maxV = (ZONE_MAX_Z - zoneZ) * PANEL_SPEED / (zoneZ - SPAWN_Z);
-        const zoneSpeed = maxV * rnd(0.25, 0.28);
-        const wobble    = Math.random() < 1 / 7;
+        // Pick slot first so zone depth is computed relative to same-slot panels only.
+        const usedSlots = new Set(arr.filter(s => s.active && !s.wobble).map(s => s.slotIdx));
+        const freeSlots = PANEL_SLOT_X.map((_, i) => i).filter(i => !usedSlots.has(i));
+        const wobble    = freeSlots.length === 0;
+        const slotIdx   = wobble
+          ? Math.floor(Math.random() * PANEL_SLOT_X.length)
+          : freeSlots[Math.floor(Math.random() * freeSlots.length)];
         const wobbleVel = wobble ? rnd(PANEL_SPEED * 7, PANEL_SPEED * 10) * (Math.random() < 0.5 ? 1 : -1) : 0;
+
+        const nominalDepth = PANEL_D_MIN + Math.random() * (PANEL_D_MAX - PANEL_D_MIN);
+        const minDepth     = nominalDepth / 4.5;
+
+        // Compute free Z ranges only among panels in the same slot.
+        const occupiedIntervals = arr
+          .filter(s => s.active && !s.evaporating && !s.clearing && s.slotIdx === slotIdx)
+          .map(s => [s.zoneZ - s.depth / 2 - s.depth * 0.05, s.zoneZ + s.depth / 2 + s.depth * 0.05] as [number,number])
+          .sort((a, b) => a[0] - b[0]);
+        const freeRanges: [number, number][] = [];
+        let cur = ZONE_MIN_Z;
+        for (const [iLo, iHi] of occupiedIntervals) {
+          if (iLo > cur) freeRanges.push([cur, iLo]);
+          cur = Math.max(cur, iHi);
+        }
+        if (cur < ZONE_MAX_Z) freeRanges.push([cur, ZONE_MAX_Z]);
+
+        // If slot is empty, use full zone with nominalDepth. Otherwise fit into free range.
+        let depth = nominalDepth;
+        let zoneZ = (ZONE_MIN_Z + ZONE_MAX_Z) / 2;
+        if (occupiedIntervals.length > 0) {
+          const validRanges = freeRanges.filter(([a, b]) => b - a >= minDepth);
+          if (validRanges.length > 0) {
+            const [ra, rb] = validRanges[Math.floor(Math.random() * validRanges.length)];
+            depth = Math.min(rb - ra, nominalDepth);
+            const halfD = depth / 2;
+            zoneZ = (ra + halfD) + Math.random() * Math.max(0, (rb - halfD) - (ra + halfD));
+          }
+        }
+
+        const maxV    = (ZONE_MAX_Z - zoneZ) * PANEL_SPEED / (zoneZ - SPAWN_Z);
+        const zoneSpeed = maxV * rnd(0.25, 0.28);
 
         const b = batch.current;
         const verseForSlot = b.length > 0 ? b[Math.floor(Math.random() * b.length)] : null;
 
         Object.assign(slot, {
-          active:true, groupIdx:Math.floor(Math.random()*PANEL_GROUPS.length),
+          active:true, slotIdx,
           z:SPAWN_Z, depth, born:now, zoneZ, zoneSpeed,
           zoneAnim:0, zoneEnterStart:now, zoneExiting:false, zoneExitStart:0,
           evaporating:false, matched:false, offsetX:0, wobble, wobbleVel,
@@ -1412,7 +1500,7 @@ function RoundIntroOverlay({ round, verse, onDone }: { round: number; verse: Gam
     setCountdown(ROUND_INTRO_S);
     const id = setInterval(() => {
       setCountdown(c => {
-        if (c <= 1) { clearInterval(id); doneRef.current(); return 0; }
+        if (c <= 1) { clearInterval(id); setTimeout(() => doneRef.current(), 0); return 0; }
         return c - 1;
       });
     }, 1000);
@@ -1463,7 +1551,7 @@ function RoundTimerHUD({ seconds, round }: { seconds: number; round: number }) {
 // ── Scene ─────────────────────────────────────────────────────────────────────
 
 function VerseBattleScene({ controllers, inputsMap, colorMap, onResult, onSkip, zoneHandle, batch,
-  enemyClear, boxClear, panelClear, onClearDone, spawnEnabled, difficulty }: {
+  enemyClear, boxClear, panelClear, onClearDone, spawnEnabled, difficulty, roomId }: {
   controllers: ControllerDisplay[];
   inputsMap: React.MutableRefObject<Map<string, ControllerState>>;
   colorMap: React.MutableRefObject<Record<string, string>>;
@@ -1477,11 +1565,15 @@ function VerseBattleScene({ controllers, inputsMap, colorMap, onResult, onSkip, 
   onClearDone: React.MutableRefObject<() => void>;
   spawnEnabled: React.MutableRefObject<boolean>;
   difficulty: React.MutableRefObject<Difficulty>;
+  roomId: string;
 }) {
   const enemyHandle  = useRef<EnemyHandle>({ slots:[], pushSlot:()=>{} });
   const spawnBeamRef = useRef<SpawnBeam>(() => {});
   const playerPosRef = useRef<Map<string, THREE.Vector3>>(new Map());
   const boxHitRef    = useRef<Map<string, number>>(new Map());
+  const onImpactRef  = useRef((x: number, y: number, z: number) => {
+    SpriteAnimService.play(WRONG_ANSWER_ANIM, x, y, z);
+  });
 
   const handleBoxHit = useCallback((id: string, nx: number) => {
     boxHitRef.current.set(id, (boxHitRef.current.get(id) ?? 0) + nx);
@@ -1510,13 +1602,14 @@ function VerseBattleScene({ controllers, inputsMap, colorMap, onResult, onSkip, 
       {controllers.map(ctrl => (
         <PlayerSphere key={ctrl.id} controller={ctrl} inputsMap={inputsMap}
           enemyHandle={enemyHandle} spawnBeam={spawnBeamRef} playerPosRef={playerPosRef}
-          boxHitRef={boxHitRef} zoneHandle={zoneHandle}
+          boxHitRef={boxHitRef} zoneHandle={zoneHandle} roomId={roomId}
           color={colorMap.current[ctrl.id] ?? '#ffffff'} />
       ))}
 
-      <PanelManager onResult={onResult} onSkip={onSkip} zoneHandle={zoneHandle} batch={batch}
+      <PanelManager onResult={onResult} onImpact={onImpactRef} onSkip={onSkip} zoneHandle={zoneHandle} batch={batch}
         clearHandle={panelClear} onClearDone={onClearDone} spawnEnabled={spawnEnabled} difficulty={difficulty}
         playerPosRef={playerPosRef} />
+      <SpriteAnimLayer />
 
       <EffectComposer>
         <Bloom luminanceThreshold={0.8} luminanceSmoothing={0.3} intensity={4.0} />
@@ -1539,9 +1632,10 @@ export interface VerseBattleGameProps {
   controllers: ControllerDisplay[];
   gameOnInputRef: React.MutableRefObject<(frame: ControllerFrame) => void>;
   verses: GameVerse[];
+  roomId: string;
 }
 
-export default function VerseBattleGame({ controllers, gameOnInputRef, verses }: VerseBattleGameProps) {
+export default function VerseBattleGame({ controllers, gameOnInputRef, verses, roomId }: VerseBattleGameProps) {
   const inputsMap = useRef<Map<string, ControllerState>>(new Map());
   const [scores, setScores]                   = useState<Record<string, number>>({});
   const [currentVerseIdx, setCurrentVerseIdx] = useState(0);
@@ -1688,6 +1782,7 @@ export default function VerseBattleGame({ controllers, gameOnInputRef, verses }:
           zoneHandle={zoneHandle} batch={batchRef}
           enemyClear={enemyClearRef} boxClear={boxClearRef} panelClear={panelClearRef}
           onClearDone={onClearDoneRef} spawnEnabled={spawnEnabledRef} difficulty={difficultyRef}
+          roomId={roomId}
         />
       </Canvas>
     </div>
