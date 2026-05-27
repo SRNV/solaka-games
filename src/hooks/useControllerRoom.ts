@@ -135,6 +135,11 @@ export function useControllerRoom(
         if (event.type === 'game_started') setPhase('playing');
         if (event.type === 'room_closed') setError('La partie a été fermée par le serveur.');
 
+        if (event.type === 'vibrate' && event.controllerId === controllerId) {
+          const ms = typeof event.durationMs === 'number' ? event.durationMs : 300;
+          try { navigator.vibrate(ms); } catch { /* not supported */ }
+        }
+
         const updatesControllers = (
           event.type === 'controller_joined' ||
           event.type === 'controller_reconnected' ||
