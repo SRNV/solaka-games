@@ -67,14 +67,8 @@ function GameConfigPanel({ onLaunch }: { onLaunch: (cfg: GameConfig, verses: Gam
   const handleLaunch = async () => {
     setLoading(true);
     try {
-      const all = await bibleStore.randomVerses(300);
-      let filtered = all as GameVerse[];
-      if (selectedBooks !== 'all') {
-        const set = new Set(selectedBooks);
-        const book = filtered.filter(v => set.has(v.bookName));
-        if (book.length >= 10) filtered = book;
-      }
-      onLaunch({ mode, roundCount, difficulty, books: selectedBooks, batchStyle }, filtered);
+      const verses = await bibleStore.randomVerses(300, selectedBooks);
+      onLaunch({ mode, roundCount, difficulty, books: selectedBooks, batchStyle }, verses);
     } catch (e) {
       console.error(e);
       setLoading(false);

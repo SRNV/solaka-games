@@ -1,7 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Html, useTexture } from '@react-three/drei';
 import { EffectComposer, Bloom, wrapEffect } from '@react-three/postprocessing';
-import { Effect, EffectAttribute } from 'postprocessing';
+import { Effect } from 'postprocessing';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { ControllerDisplay } from '../../hooks/useGameRoom.ts';
@@ -1179,8 +1179,8 @@ function DynamicTerrain() {
 // ── MapBranch shaders & helpers ───────────────────────────────────────────────
 
 const BRANCH_HEIGHT_MULT   = 30;
-const LEAVES_PER_BRANCH    = 200;   // per branch — individual instances, clustered
-const BRANCH_LEAF_CLUSTERS = 120;    // cluster centers distributed along the spine
+const LEAVES_PER_BRANCH    = 20;   // per branch — individual instances, clustered
+const BRANCH_LEAF_CLUSTERS = 12;    // cluster centers distributed along the spine
 const BRANCH_LEAVES_PER_CL = Math.ceil(LEAVES_PER_BRANCH / BRANCH_LEAF_CLUSTERS);
 const SUB_PER_BRANCH       = 20;
 
@@ -1346,131 +1346,101 @@ const _lR       = new THREE.Vector3();
 const _lCenter  = new THREE.Vector3();
 const _branchM  = new THREE.Matrix4();
 const _leafM    = new THREE.Matrix4();
+// Camera billboard scratch — extracted once per frame for foliage planes
+const _camR = new THREE.Vector3();
+const _camU = new THREE.Vector3();
+const _camF = new THREE.Vector3();
 
 type BranchSlot = EnemySlot & {
   b1: number; b2: number; a1: number; a2: number;
+  spawnT: number; spawnZ: number;
   subLocalOffs: THREE.Vector3[];
   subLocalDirs: THREE.Vector3[];
   subHeight: number[];
   subRadius: number[];
-  spawnWX: number; spawnWY: number;
-  spawnQuat: THREE.Quaternion;
   foliageCount: number;                      // 0 = no spheres (4/20 chance)
   foliageLocalOffs: THREE.Vector3[];         // per-sphere local offsets
   foliageSizes: number[];                    // per-sphere radii
   leafData: Float32Array;  // LEAVES_PER_BRANCH*4 — (heightFrac, radialAngle, size, tilt) per leaf
 };
-const FOL_MAX = 4; // max foliage spheres per branch
+const FOL_MAX      = 4;  // max foliage planes per branch
+const FOL_PLANE_SEG = 18; // 18×18 segments — enough vertices for smooth Perlin deformation
 
-// ── Foliage Blob — post-process effect ───────────────────────────────────────
-// Written by MapBranchManager each frame; read by FoliageBlobEffectImpl.update()
-const MAX_FOL_TIPS = 48;
-const _folTips = {
-  pos:        new Float32Array(MAX_FOL_TIPS * 3),  // world-space for noise seeding
-  ndc:        new Float32Array(MAX_FOL_TIPS * 3),  // projected NDC xy + z after .project()
-  screenR:    new Float32Array(MAX_FOL_TIPS),       // blob radius in NDC units
-  camDist:    new Float32Array(MAX_FOL_TIPS),       // camera distance for fog
-  color:      new Float32Array(MAX_FOL_TIPS * 3),
-  depthRange: [0, 1] as [number, number],            // [minDist, maxDist] of visible tips this frame
-  count:      0,
-  // scratch buffers for depth-sort (reused every frame, no allocation)
-  _sortIdx:   new Uint8Array(MAX_FOL_TIPS),
-  _tmpPos:    new Float32Array(MAX_FOL_TIPS * 3),
-  _tmpNdc:    new Float32Array(MAX_FOL_TIPS * 3),
-  _tmpScrR:   new Float32Array(MAX_FOL_TIPS),
-  _tmpDist:   new Float32Array(MAX_FOL_TIPS),
-  _tmpCol:    new Float32Array(MAX_FOL_TIPS * 3),
-};
+// ── Foliage Plane — world-space billboard with Perlin blob shape ──────────────
+// Same noise parameters as the former post-process:
+//   seed  = worldXY * 1.4               (stable, Z-independent)
+//   pSeed = seed.xy * 0.5 + diff * 2.8  (asymmetric offset per pixel/vertex)
+//   n     = fbm(vn3, octaves 1.6/4.0/9.5, weights 0.55/0.28/0.17)
+//   threshold = 0.15 + d * 0.58          (ragged fringe)
+const FOL_NOISE_GLSL = /* glsl */`
+float h21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+float vn3(vec3 p){
+  vec3 i=floor(p); vec3 f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=h21(i.xy), b=h21(i.xy+vec2(1,0)), c=h21(i.xy+vec2(0,1)), d=h21(i.xy+vec2(1,1));
+  float e=h21(i.xy+i.z*7.3), f2=h21(i.xy+vec2(1,0)+i.z*7.3);
+  float g=h21(i.xy+vec2(0,1)+i.z*7.3), h2=h21(i.xy+vec2(1,1)+i.z*7.3);
+  return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y),mix(mix(e,f2,f.x),mix(g,h2,f.x),f.y),f.z);
+}
+float folNoise(vec2 worldXY, vec2 diff){
+  vec3 seed  = vec3(worldXY * 1.4, 0.57);
+  vec3 pSeed = vec3(seed.xy * 0.5 + diff * 2.8, seed.z);
+  return vn3(pSeed*1.6)*0.55 + vn3(pSeed*4.0)*0.28 + vn3(pSeed*9.5)*0.17;
+}`;
 
-const FOL_BLOB_FRAG = /* glsl */`
-uniform int   uTipCount;
-uniform vec3  uTipPos[${MAX_FOL_TIPS}];
-uniform vec3  uTipNDC[${MAX_FOL_TIPS}];
-uniform float uTipScreenR[${MAX_FOL_TIPS}];
-uniform float uTipCamDist[${MAX_FOL_TIPS}];
-uniform vec3  uTipColor[${MAX_FOL_TIPS}];
-uniform vec2  uDepthRange;
-uniform float uAspect;
+const FOL_PLANE_VERT = /* glsl */`
+${FOL_NOISE_GLSL}
+// instanceColor is auto-injected by Three.js when mesh.instanceColor is set
+varying vec3 vInstCol;
+varying vec2 vWorldXY;   // instance center XY — stable noise seed
+varying vec3 vWorldPos;  // instance center world pos — for 3D fog distance
+varying vec2 vUvC;       // centered UV in [-1, 1]
+
+void main() {
+  vec4 centerW = modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+  vWorldXY  = centerW.xy;
+  vWorldPos = centerW.xyz;
+  vInstCol  = instanceColor;
+
+  vec2 uvC  = uv * 2.0 - 1.0;
+  vUvC = uvC;
+  float dLen = length(uvC);
+
+  float n = folNoise(centerW.xy, uvC * 2.8);
+
+  vec2 dir     = dLen > 0.001 ? uvC / dLen : vec2(0.0, 1.0);
+  float radialD = (n - 0.35) * 0.38 * smoothstep(0.2, 1.0, dLen);
+  vec2 dispUV  = uvC + dir * radialD;
+
+  vec4 worldPos = modelMatrix * instanceMatrix * vec4(dispUV.x, dispUV.y, 0.0, 1.0);
+  gl_Position   = projectionMatrix * viewMatrix * worldPos;
+}`;
+
+const FOL_PLANE_FRAG = /* glsl */`
+${FOL_NOISE_GLSL}
 uniform float uFogNear;
 uniform float uFogFar;
 uniform vec3  uFogColor;
+varying vec3  vInstCol;
+varying vec2  vWorldXY;
+varying vec3  vWorldPos;
+varying vec2  vUvC;
 
-float h21(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-float vn3(vec3 p){
-  vec3 i=floor(p);vec3 f=fract(p);f=f*f*(3.0-2.0*f);
-  float a=h21(i.xy),b=h21(i.xy+vec2(1,0)),c=h21(i.xy+vec2(0,1)),d=h21(i.xy+vec2(1,1));
-  float e=h21(i.xy+i.z*7.3),f2=h21(i.xy+vec2(1,0)+i.z*7.3);
-  float g=h21(i.xy+vec2(0,1)+i.z*7.3),h2=h21(i.xy+vec2(1,1)+i.z*7.3);
-  return mix(mix(mix(a,b,f.x),mix(c,d,f.x),f.y),mix(mix(e,f2,f.x),mix(g,h2,f.x),f.y),f.z);
-}
-void mainImage(const in vec4 inputColor, const in vec2 uv, const in float depth, out vec4 outputColor){
-  outputColor = inputColor;
-  vec2 ndc = uv * 2.0 - 1.0;
-  for(int i = 0; i < ${MAX_FOL_TIPS}; i++){
-    if(i >= uTipCount) break;
-    float blobZ = uTipNDC[i].z;
-    if(blobZ > 1.0) continue;
-    // Depth test: only render on background/sky pixels (depth ≈ 1.0).
-    // This guarantees all scene geometry (branches, terrain) always occludes foliage.
-    if(depth < 0.9995) continue;
-    float sr = max(uTipScreenR[i], 0.001);
-    vec2  diff = (ndc - uTipNDC[i].xy) * vec2(uAspect, 1.0);
-    float d = length(diff) / sr;
-    if(d > 2.5) continue;
-    // Stable seed: world XY only (Z scrolls → flicker)
-    vec3 seed = vec3(uTipPos[i].xy * 1.4, 0.57);
-    // Use raw diff offset (not normalised dir) → each blob has asymmetric, unique shape
-    // Pixels sample different noise points per direction → NOT rotationally symmetric
-    vec3 pSeed = vec3(seed.xy * 0.5 + diff * 2.8, seed.z);
-    float n = vn3(pSeed*1.6)*0.55 + vn3(pSeed*4.0)*0.28 + vn3(pSeed*9.5)*0.17;
-    // Threshold rises with distance → dense core, sparse ragged fringe
-    float threshold = 0.15 + d * 0.58;
-    float coverage = step(threshold, n);
-    if(coverage < 0.5) continue;
-    float fog = smoothstep(uFogNear, uFogFar, uTipCamDist[i]);
-    if(fog >= 0.99) continue;
-    // Depth-relative brightness: close tips are full brightness, far tips are dimmer
-    float depthSpan = max(uDepthRange.y - uDepthRange.x, 1.0);
-    float depthT    = clamp((uTipCamDist[i] - uDepthRange.x) / depthSpan, 0.0, 1.0);
-    float depthBrightness = mix(1.0, 0.42, depthT);
-    vec3 blobCol = mix(uTipColor[i]*(0.45 + n*0.55)*depthBrightness, uFogColor, fog);
-    outputColor.rgb = mix(outputColor.rgb, blobCol, (1.0 - fog));
-  }
+void main() {
+  float dLen = length(vUvC);
+  if (dLen > 1.45) discard;
+
+  float d = dLen / 1.4142;
+  float n = folNoise(vWorldXY, vUvC * 2.8);
+
+  float threshold = 0.15 + d * 0.58;
+  if (n < threshold) discard;
+
+  float fog = smoothstep(uFogNear, uFogFar, distance(vWorldPos, cameraPosition));
+  if (fog >= 0.99) discard;
+
+  vec3 col = mix(vInstCol * (0.45 + n * 0.55), uFogColor, fog);
+  gl_FragColor = vec4(col, 1.0 - fog * 0.5);
 }`;
-
-class FoliageBlobEffectImpl extends Effect {
-  constructor(_: object = {}) {
-    super('FoliageBlob', FOL_BLOB_FRAG, {
-      attributes: EffectAttribute.DEPTH,
-      uniforms: new Map<string, THREE.Uniform<unknown>>([
-        ['uTipCount',   new THREE.Uniform(0)],
-        ['uTipPos',     new THREE.Uniform(new Float32Array(MAX_FOL_TIPS * 3))],
-        ['uTipNDC',     new THREE.Uniform(new Float32Array(MAX_FOL_TIPS * 3))],
-        ['uTipScreenR', new THREE.Uniform(new Float32Array(MAX_FOL_TIPS))],
-        ['uTipCamDist', new THREE.Uniform(new Float32Array(MAX_FOL_TIPS))],
-        ['uTipColor',   new THREE.Uniform(new Float32Array(MAX_FOL_TIPS * 3))],
-        ['uDepthRange', new THREE.Uniform(new THREE.Vector2(0, 1))],
-        ['uAspect',     new THREE.Uniform(1.0)],
-        ['uFogNear',    new THREE.Uniform(180.0)],
-        ['uFogFar',     new THREE.Uniform(700.0)],
-        ['uFogColor',   new THREE.Uniform(new THREE.Color(0x02A9EA))],
-      ]),
-    });
-  }
-  override update(_renderer: unknown, _inputBuffer: unknown, _deltaTime: unknown): void {
-    this.uniforms.get('uTipCount')!.value = _folTips.count;
-    (this.uniforms.get('uTipPos')!.value     as Float32Array).set(_folTips.pos);
-    (this.uniforms.get('uTipNDC')!.value     as Float32Array).set(_folTips.ndc);
-    (this.uniforms.get('uTipScreenR')!.value as Float32Array).set(_folTips.screenR);
-    (this.uniforms.get('uTipCamDist')!.value as Float32Array).set(_folTips.camDist);
-    (this.uniforms.get('uTipColor')!.value   as Float32Array).set(_folTips.color);
-    const dr = this.uniforms.get('uDepthRange')!.value as THREE.Vector2;
-    dr.x = _folTips.depthRange[0]; dr.y = _folTips.depthRange[1];
-    const canvas = document.querySelector('canvas');
-    if (canvas) this.uniforms.get('uAspect')!.value = canvas.width / canvas.height;
-  }
-}
-const FoliageBlobEffect = wrapEffect(FoliageBlobEffectImpl);
 
 function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, difficulty, panelOccupied, playerMoveDirRef }: {
   handle: React.MutableRefObject<EnemyHandle>;
@@ -1484,6 +1454,7 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
   const meshRef    = useRef<THREE.InstancedMesh>(null);
   const subRef     = useRef<THREE.InstancedMesh>(null);
   const leafRef    = useRef<THREE.InstancedMesh>(null);
+  const folRef     = useRef<THREE.InstancedMesh>(null);
   const slots      = useRef<BranchSlot[]>([]);
   const lastSpawnMs = useRef(0);
   const bendDirty   = useRef(false);
@@ -1535,6 +1506,21 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
     uniforms: FOG_U(), side: THREE.DoubleSide, transparent: true,
   }), []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const folGeo = useMemo(() => new THREE.PlaneGeometry(1, 1, FOL_PLANE_SEG, FOL_PLANE_SEG), []);
+
+  const folMat = useMemo(() => new THREE.ShaderMaterial({
+    vertexShader: FOL_PLANE_VERT,
+    fragmentShader: FOL_PLANE_FRAG,
+    uniforms: {
+      uFogColor: { value: new THREE.Color(0x02A9EA) },
+      uFogNear:  { value: 180 },
+      uFogFar:   { value: 700 },
+    },
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  }), []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Gradient generated once at mount — one color per pool slot.
   const leafGradient = useMemo(() => buildLeafGradient(BRANCH_POOL), []);
 
@@ -1544,7 +1530,7 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
       arr.push({
         active:false, localX:0, z:SPAWN_Z, y:1, vx:0, vz:0, baseVz:0, radius:1, meshIdx:i, clearing:false, clearStart:0,
         b1:0, b2:0, a1:0, a2:0,
-        spawnWX: 0, spawnWY: 0, spawnQuat: new THREE.Quaternion(),
+        spawnT:0, spawnZ:SPAWN_Z,
         foliageCount: 0,
         foliageLocalOffs: Array.from({length: FOL_MAX}, () => new THREE.Vector3()),
         foliageSizes: new Array(FOL_MAX).fill(1),
@@ -1561,13 +1547,19 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
     clearHandle.current = { startClear() { onClearDone.current(); } };
 
     _mat4.makeScale(0, 0, 0);
-    const mesh = meshRef.current, sub = subRef.current, lf = leafRef.current;
+    const mesh = meshRef.current, sub = subRef.current, lf = leafRef.current, fl = folRef.current;
     for (let i = 0; i < BRANCH_POOL; i++)               mesh?.setMatrixAt(i, _mat4);
     for (let i = 0; i < BRANCH_POOL * SUB_PER_BRANCH; i++) sub?.setMatrixAt(i, _mat4);
     for (let i = 0; i < BRANCH_POOL * LEAVES_PER_BRANCH; i++) lf?.setMatrixAt(i, _mat4);
+    const _black = new THREE.Color(0, 0, 0);
+    for (let i = 0; i < BRANCH_POOL * FOL_MAX; i++) {
+      fl?.setMatrixAt(i, _mat4);
+      fl?.setColorAt(i, _black); // pre-create instanceColor buffer so USE_INSTANCING_COLOR is defined
+    }
     if (mesh) mesh.instanceMatrix.needsUpdate = true;
     if (sub)  sub.instanceMatrix.needsUpdate  = true;
     if (lf)   lf.instanceMatrix.needsUpdate   = true;
+    if (fl)   { fl.instanceMatrix.needsUpdate = true; if (fl.instanceColor) fl.instanceColor.needsUpdate = true; }
 
     return () => { handle.current = { slots:[], pushSlot:()=>{} }; };
   }, [handle, clearHandle, onClearDone]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1673,16 +1665,9 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
     }
 
     const sz = SPAWN_Z - rnd(0, 60);
-    // Visual cylinder surface = terrainY (bumps + cylinder arc) with roll/yaw applied.
-    // Phase invariance: every wave has phase velocity 100 u/s = vz, so the frozen world
-    // position matches the cylinder surface at every future Z as the branch scrolls.
-    const ty = terrainY(lx, sz, spawnT);
-    surfaceQuat(lx, sz, spawnT, slot.spawnQuat);
-    const [wx, wy] = applyRollYaw(lx, ty, spawnT, sz);
-    slot.spawnWX = wx; slot.spawnWY = wy;
     slot.active = true; slot.localX = lx; slot.z = sz; slot.clearing = false;
+    slot.spawnT = spawnT; slot.spawnZ = sz;
     slot.radius = r;
-    slot.y = wy + r * BRANCH_HEIGHT_MULT * 0.5;
     slot.baseVz = 100; slot.vz = 100; slot.vx = 0;
     activateBend(slot);
   }
@@ -1694,15 +1679,21 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
     const imesh = meshRef.current; if (!imesh) return;
     const isub  = subRef.current;
     const ilf   = leafRef.current;
-    _folTips.count = 0;
+    const ifl   = folRef.current;
+
+    // Extract camera axes once — reused for all billboard instances.
+    if (ifl) {
+      state.camera.matrixWorld.extractBasis(_camR, _camU, _camF);
+      _camF.negate(); // matrixWorld column 2 points away from camera; negate → toward camera
+    }
 
     let activeCount = 0;
     for (const _s of arr) {
       const s = _s as BranchSlot;
       if (!s.active) continue;
 
-      // Scroll in Z at fixed terrain speed. No lateral movement.
-      s.z += s.vz * delta;
+      // Derived Z from absolute time for perfect sync with terrain waves (scrolling at 100 u/s)
+      s.z = s.spawnZ + s.vz * (t - s.spawnT);
 
       // Recycle when past camera — hide trunk, subs, and all leaf instances.
       if (s.z > ELIM_BOT_Z) {
@@ -1714,14 +1705,21 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
           const base = s.meshIdx * LEAVES_PER_BRANCH;
           for (let li = 0; li < LEAVES_PER_BRANCH; li++) ilf.setMatrixAt(base + li, _mat4);
         }
+        if (ifl) {
+          const base = s.meshIdx * FOL_MAX;
+          for (let k = 0; k < FOL_MAX; k++) ifl.setMatrixAt(base + k, _mat4);
+        }
         continue;
       }
 
       activeCount++;
+      const ty = terrainY(s.localX, s.z, t);
+      surfaceQuat(s.localX, s.z, t, _squat);
+      const [twx, twy] = applyRollYaw(s.localX, ty, t, s.z);
+      const h = s.radius * BRANCH_HEIGHT_MULT;
 
-      // Position and orientation frozen at spawn — only Z scrolls.
-      _squat.copy(s.spawnQuat);
-      const twx = s.spawnWX, twy = s.spawnWY;
+      // Restore s.y for collisions (world-space center)
+      s.y = twy + h * 0.5;
 
       _mat4.makeRotationFromQuaternion(_squat);
       _mat4.setPosition(twx, twy, s.z);
@@ -1729,7 +1727,6 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
 
       // Per-leaf instances — skip entirely if branch is in fog.
       if (ilf) {
-        const h = s.radius * BRANCH_HEIGHT_MULT;
         const branchCamDist = state.camera.position.distanceTo(_pos3.set(twx, twy, s.z));
         const base = s.meshIdx * LEAVES_PER_BRANCH;
         if (branchCamDist > 320) {
@@ -1779,29 +1776,31 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
         }
       }
 
-      // Write foliage tip positions to shared buffer for FoliageBlobEffect
-      for (let k = 0; k < s.foliageCount && _folTips.count < MAX_FOL_TIPS; k++) {
-        const fi = _folTips.count++;
-        _tmpV3.copy(s.foliageLocalOffs[k]).applyQuaternion(_squat);
-        const wpx = twx + _tmpV3.x;
-        const wpy = twy + _tmpV3.y;
-        const wpz = s.z  + _tmpV3.z;
-        _folTips.pos[fi*3]   = wpx;
-        _folTips.pos[fi*3+1] = wpy;
-        _folTips.pos[fi*3+2] = wpz;
-        // Project to NDC for screen-space shader
-        _pos3.set(wpx, wpy, wpz).project(state.camera);
-        _folTips.ndc[fi*3]   = _pos3.x;
-        _folTips.ndc[fi*3+1] = _pos3.y;
-        _folTips.ndc[fi*3+2] = _pos3.z;
-        // Screen-space radius and camera distance
-        const camDist = Math.max(0.1, state.camera.position.distanceTo(_tmpV3.set(wpx, wpy, wpz)));
-        _folTips.screenR[fi]  = (s.foliageSizes[k] / camDist) * (state.camera as THREE.PerspectiveCamera).projectionMatrix.elements[5];
-        _folTips.camDist[fi]  = camDist;
+      // Billboard foliage planes at branch tip positions.
+      if (ifl) {
         const col = leafGradient[s.meshIdx % leafGradient.length];
-        _folTips.color[fi*3]   = col.r;
-        _folTips.color[fi*3+1] = col.g;
-        _folTips.color[fi*3+2] = col.b;
+        const base = s.meshIdx * FOL_MAX;
+        for (let k = 0; k < FOL_MAX; k++) {
+          if (k < s.foliageCount) {
+            _tmpV3.copy(s.foliageLocalOffs[k]).applyQuaternion(_squat);
+            const wpx = twx + _tmpV3.x;
+            const wpy = twy + _tmpV3.y;
+            const wpz = s.z  + _tmpV3.z;
+            const sz  = s.foliageSizes[k];
+            // Build camera-facing basis scaled by plane size.
+            _mat4f.makeBasis(
+              _camR.clone().multiplyScalar(sz),
+              _camU.clone().multiplyScalar(sz),
+              _camF.clone().multiplyScalar(sz),
+            );
+            _mat4f.setPosition(wpx, wpy, wpz);
+            ifl.setMatrixAt(base + k, _mat4f);
+            ifl.setColorAt(base + k, col);
+          } else {
+            _mat4.makeScale(0, 0, 0);
+            ifl.setMatrixAt(base + k, _mat4);
+          }
+        }
       }
 
       for (let k = 0; k < SUB_PER_BRANCH; k++) {
@@ -1822,42 +1821,9 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
     imesh.instanceMatrix.needsUpdate = true;
     isub && (isub.instanceMatrix.needsUpdate = true);
     ilf  && (ilf.instanceMatrix.needsUpdate  = true);
-
-    // Compute depth range + sort tips farthest-first (painter's algorithm: close blobs overwrite far)
-    if (_folTips.count > 0) {
-      const n = _folTips.count;
-      let dMin = Infinity, dMax = 0;
-      for (let fi = 0; fi < n; fi++) {
-        _folTips._sortIdx[fi] = fi;
-        const d = _folTips.camDist[fi];
-        if (d < dMin) dMin = d;
-        if (d > dMax) dMax = d;
-      }
-      _folTips.depthRange[0] = dMin;
-      _folTips.depthRange[1] = dMax;
-      // Sort indices descending by camDist (farthest first → shader processes close tips last)
-      const idx = _folTips._sortIdx.subarray(0, n);
-      idx.sort((a, b) => _folTips.camDist[b] - _folTips.camDist[a]);
-      // Reorder all tip arrays into scratch buffers then copy back
-      for (let si = 0; si < n; si++) {
-        const src = idx[si];
-        _folTips._tmpDist[si]     = _folTips.camDist[src];
-        _folTips._tmpScrR[si]     = _folTips.screenR[src];
-        _folTips._tmpPos[si*3]    = _folTips.pos[src*3];
-        _folTips._tmpPos[si*3+1]  = _folTips.pos[src*3+1];
-        _folTips._tmpPos[si*3+2]  = _folTips.pos[src*3+2];
-        _folTips._tmpNdc[si*3]    = _folTips.ndc[src*3];
-        _folTips._tmpNdc[si*3+1]  = _folTips.ndc[src*3+1];
-        _folTips._tmpNdc[si*3+2]  = _folTips.ndc[src*3+2];
-        _folTips._tmpCol[si*3]    = _folTips.color[src*3];
-        _folTips._tmpCol[si*3+1]  = _folTips.color[src*3+1];
-        _folTips._tmpCol[si*3+2]  = _folTips.color[src*3+2];
-      }
-      _folTips.camDist.set(_folTips._tmpDist.subarray(0, n));
-      _folTips.screenR.set(_folTips._tmpScrR.subarray(0, n));
-      _folTips.pos.set(_folTips._tmpPos.subarray(0, n*3));
-      _folTips.ndc.set(_folTips._tmpNdc.subarray(0, n*3));
-      _folTips.color.set(_folTips._tmpCol.subarray(0, n*3));
+    if (ifl) {
+      ifl.instanceMatrix.needsUpdate = true;
+      if (ifl.instanceColor) ifl.instanceColor.needsUpdate = true;
     }
 
     if (bendDirty.current) {
@@ -1874,6 +1840,7 @@ function MapBranchManager({ handle, clearHandle, onClearDone, spawnEnabled, diff
       <instancedMesh ref={meshRef} args={[branchGeo, branchMat, BRANCH_POOL]}                  frustumCulled={false} />
       <instancedMesh ref={subRef}  args={[subGeo,    subMat,    BRANCH_POOL * SUB_PER_BRANCH]}  frustumCulled={false} />
       <instancedMesh ref={leafRef} args={[leafGeo,   leafMat,   BRANCH_POOL * LEAVES_PER_BRANCH]} frustumCulled={false} />
+      <instancedMesh ref={folRef}  args={[folGeo,    folMat,    BRANCH_POOL * FOL_MAX]}          frustumCulled={false} />
     </>
   );
 }
@@ -3222,8 +3189,6 @@ function VerseBattleScene({ controllers, inputsMap, colorMap, onResult, onSkip, 
       <HitAnimLayer />
 
       <EffectComposer>
-        <EdgeOutlineEffect />
-        <FoliageBlobEffect />
         <Bloom luminanceThreshold={0.8} luminanceSmoothing={0.3} intensity={4.0} />
       </EffectComposer>
     </>
